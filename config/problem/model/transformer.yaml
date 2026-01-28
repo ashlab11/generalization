@@ -1,0 +1,20 @@
+model: transformer
+model_path:
+width: 256
+num_blocks: 1
+injection_type: concat
+norm_type: peri
+norm_before_head: true
+recall_inner: false
+attn_type: local
+num_sinks: 0
+hidden_dropout: 0
+max_iters: 30
+monotone_lambda: 0.0
+monotone_margin: 0.0
+noise_prob: 0.0
+noise_scale: 0.01
+residual_method: add
+test_iterations:
+  low: 30
+  high: 40
