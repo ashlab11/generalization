@@ -13,19 +13,15 @@ import time
 import json
 import logging
 import os
-import sys
 from collections import OrderedDict
 import wandb
 
 import hydra
 import numpy as np
 import torch
-from icecream import ic
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.tensorboard import SummaryWriter
 
 import deepthinking as dt
-import deepthinking.utils.logging_utils as lg
 
 
 # Ignore statements for pylint:
@@ -57,7 +53,6 @@ def main(cfg: DictConfig):
     cfg.problem.model.test_iterations = list(range(cfg.problem.model.test_iterations["low"],
                                                    cfg.problem.model.test_iterations["high"] + 1))
     assert 0 <= cfg.problem.hyp.alpha <= 1, "Weighting for loss (alpha) not in [0, 1], exiting."
-    writer = SummaryWriter(log_dir=f"tensorboard-{cfg.problem.model.model}-{cfg.problem.hyp.alpha}")
 
     ####################################################
     #               Dataset and Network and Optimizer
@@ -69,15 +64,21 @@ def main(cfg: DictConfig):
     pytorch_total_params = sum(p.numel() for p in net.parameters())
     
     # Initialize wandb with model info
+    run_name = getattr(cfg, "run_id", None) or None
     wandb.init(
-        project='deep-thinking', 
-        name=cfg.run_id, 
+        project='deep-thinking',
+        name=run_name,
         config=OmegaConf.to_container(cfg, resolve=True)
     )
+    if not getattr(cfg, "run_id", None):
+        cfg.run_id = wandb.run.name
+        wandb.config.update({"run_id": cfg.run_id}, allow_val_change=True)
+    
     wandb.config.update({
         "total_params_M": round(pytorch_total_params / 1e6, 3),
         "model_architecture": cfg.problem.model.model,
     }, allow_val_change=True)
+    
     
     log.info(f"This {cfg.problem.model.model} has {pytorch_total_params/1e6:0.3f} million parameters.")
     log.info(f"Training will start at epoch {start_epoch}.")
@@ -220,19 +221,7 @@ def main(cfg: DictConfig):
             if prev_state is not None:
                 torch.save(prev_state, "pre_crash_checkpoint.pt")
                 log.info("Saved pre-crash checkpoint to pre_crash_checkpoint.pt")
-            raise ValueError(f"{ic.format()} Loss is nan, exiting...")
-
-        # TensorBoard loss writing
-        writer.add_scalar("Loss/loss", loss, epoch)
-        writer.add_scalar("Accuracy/acc", acc, epoch)
-        writer.add_scalar("Accuracy/val_acc", val_acc, epoch)
-        writer.add_scalar("Accuracy/bit_acc", bit_acc, epoch)
-        writer.add_scalar("Accuracy/val_bit_acc", val_bit_acc, epoch)
-
-        for i in range(len(optimizer.param_groups)):
-            writer.add_scalar(f"Learning_rate/group{i}",
-                              optimizer.param_groups[i]["lr"],
-                              epoch)
+            raise ValueError(f"Loss is nan, exiting...")
 
         # evaluate the model periodically and at the final epoch
         if (epoch + 1) % cfg.problem.hyp.val_period == 0 or epoch + 1 == cfg.problem.hyp.epochs:
@@ -284,14 +273,18 @@ def main(cfg: DictConfig):
                 **first_iter_converge 
             }, step=epoch)
             
-            lg.write_to_tb([train_acc[tb_last], val_acc[tb_last], test_acc[tb_last]],
-                           ["train_acc", "val_acc", "test_acc"],
-                           epoch,
-                           writer)
-            lg.write_to_tb([train_bit_acc[tb_last], val_bit_acc[tb_last], test_bit_acc[tb_last]],
-                           ["train_bit_acc", "val_bit_acc", "test_bit_acc"],
-                           epoch,
-                           writer)
+            #Logging plots
+            plot = wandb.plot.line_series(
+                xs=cfg.problem.model.test_iterations,
+                ys=[[test_acc[i] for i in cfg.problem.model.test_iterations]],
+                keys=["acc"],
+                title=f"Perf vs step (epoch {epoch})",
+                xname="recurrent_step")
+
+            wandb.log(
+                {f"plots/{cfg.run_id}": plot}, step = epoch
+            )
+            
         # check to see if we should save
         save_now = (epoch + 1) % cfg.problem.hyp.save_period == 0 or \
                    (epoch + 1) == cfg.problem.hyp.epochs or best_so_far
@@ -301,8 +294,6 @@ def main(cfg: DictConfig):
             best_so_far = False
             log.info(f"Saving model to: {out_str}")
             torch.save(state, out_str)
-    writer.flush()
-    writer.close()
 
     # save some accuracy stats (can be used without testing to discern which models trained)
     stats = OrderedDict([("max_iters", cfg.problem.model.max_iters),
@@ -324,8 +315,4 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    # Only generate random run_id if not provided via command line
-    if not any("run_id=" in arg for arg in sys.argv):
-        run_id = dt.utils.generate_run_id()
-        sys.argv.append(f"+run_id={run_id}")
     main()

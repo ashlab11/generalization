@@ -1,0 +1,14 @@
+defaults:
+  - hyp: sudoku_default
+  - model: cnn
+
+name: sudoku
+test_data: 33
+train_data: 9
+
+model:
+  width: 100
+  max_iters: 30
+  test_iterations:
+    low: 30
+    high: 50

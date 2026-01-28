@@ -1,6 +1,6 @@
 defaults:
   - hyp: mazes_default
-  - model: dt_net_recall_2d
+  - model: cnn
 
 name: mazes
 test_data: 33

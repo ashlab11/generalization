@@ -1,5 +1,5 @@
 defaults:
-  - problem: prefix_sums
+  - problem: sudoku
   - override hydra/job_logging: custom
   - _self_
 
