@@ -28,6 +28,7 @@ helpers/data/
 plots/
 launch/my_launch/
 output_default
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

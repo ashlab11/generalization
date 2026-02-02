@@ -1,1 +1,2 @@
-**Everything I've realized**
+Weird idea: what if we do an EMA over the activations themselves? Something you can only do on a looped transformer
+Would sort of work with brains? Larger activations make the neuron stay up for longer? Does that count 
