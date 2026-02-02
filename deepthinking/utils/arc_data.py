@@ -125,6 +125,7 @@ class ArcAgiDataset(data.Dataset):
         max_tasks: Optional[int] = None,
         transform: Optional[Callable] = None,
         download: bool = True,
+        one_hot: bool = True,
         seed: int = 0,
     ):
         self.root = root
@@ -137,6 +138,7 @@ class ArcAgiDataset(data.Dataset):
         self.precompute = precompute
         self.max_tasks = max_tasks
         self.transform = transform
+        self.one_hot = one_hot
         self.seed = seed
 
         self.base_folder = "arc_agi"
@@ -165,7 +167,8 @@ class ArcAgiDataset(data.Dataset):
         perm_tag = f"perm{self.color_perm_count}"
         test_tag = "withtest" if self.include_test_pairs else "notest"
         max_tag = f"max{self.max_tasks}" if self.max_tasks is not None else "all"
-        return f"{self.split}_{rot_tag}_{perm_tag}_{test_tag}_{max_tag}_pad{self.pad_size}.pt"
+        oh_tag = "oh" if self.one_hot else "int"
+        return f"{self.split}_{rot_tag}_{perm_tag}_{test_tag}_{max_tag}_pad{self.pad_size}_{oh_tag}.pt"
 
     def _raw_data_dir(self) -> str:
         return os.path.join(self.root, self.raw_folder, ARC_AGI_FOLDER, ARC_AGI_DATA_DIR, self.split)
@@ -219,10 +222,15 @@ class ArcAgiDataset(data.Dataset):
 
         inputs = torch.stack(inputs, dim=0)
         targets = torch.stack(targets, dim=0)
+        if self.one_hot:
+            inputs = torch.nn.functional.one_hot(inputs.long(), num_classes=10).permute(0, 3, 1, 2).float()
         return inputs, targets
 
     def __getitem__(self, index):
-        return self.inputs[index].long(), self.targets[index].long()
+        inp = self.inputs[index]
+        if self.one_hot:
+            inp = inp.float()
+        return inp, self.targets[index].long()
 
     def __len__(self):
         return self.inputs.size(0)
