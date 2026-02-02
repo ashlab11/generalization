@@ -1,6 +1,6 @@
-model: transformer
-model_path:
-width: 256
+model: DTTransformer
+model_path: 
+hidden_dim: 256
 num_blocks: 1
 injection_type: concat
 norm_type: peri

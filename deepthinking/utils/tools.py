@@ -21,10 +21,8 @@ import deepthinking.models as models
 from .mazes_data import prepare_maze_loader
 from .prefix_sums_data import prepare_prefix_loader
 from .cellular_data import prepare_cellular_loader
-from .chess_data import prepare_chess_loader
+from .chess_data import prepare_lichess_puzzle_loader
 from .arc_data import prepare_arc_loader
-from .. import adjectives, names
-
 from .warmup import ExponentialWarmup, LinearWarmup
 
 # Ignore statements for pylint:
@@ -32,11 +30,6 @@ from .warmup import ExponentialWarmup, LinearWarmup
 #     Not callable (E1102), Invalid name (C0103), No exception (W0702),
 #     Too many local variables (R0914), Missing docstring (C0116, C0115).
 # pylint: disable=R0912, R0915, E1101, E1102, C0103, W0702, R0914, C0116, C0115
-
-
-def generate_run_id():
-    hashstr = f"{adjectives[random.randint(0, len(adjectives))]}-{names[random.randint(0, len(names))]}"
-    return hashstr
 
 
 def get_dataloaders(problem_args):
@@ -59,7 +52,7 @@ def get_dataloaders(problem_args):
                                    train_data=problem_args.train_data,
                                    test_data=problem_args.test_data)
     elif problem_args.name == "chess":
-        return prepare_chess_loader(train_batch_size=problem_args.hyp.train_batch_size,
+        return prepare_lichess_puzzle_loader(train_batch_size=problem_args.hyp.train_batch_size,
                                     test_batch_size=problem_args.hyp.test_batch_size,
                                     train_data=problem_args.train_data,
                                     test_data=problem_args.test_data)
@@ -75,9 +68,10 @@ def get_dataloaders(problem_args):
         raise ValueError(f"Invalid problem spec. {problem_args.name}")
 
 
-def get_model(model, width, max_iters, in_channels=3, **kwargs):
-    model = model.lower()
-    net = getattr(models, model)(width=width, in_channels=in_channels, max_iters=max_iters, **kwargs)
+def get_model(model, hidden_dim, max_iters, in_channels=3, **kwargs):
+    model_lower = model.lower()
+    model_name = model_lower if hasattr(models, model_lower) else model
+    net = getattr(models, model_name)(hidden_dim=hidden_dim, in_channels=in_channels, max_iters=max_iters, **kwargs)
     return net
 
 
@@ -193,7 +187,9 @@ def get_optimizer(optim_args, model_args, net, state_dict):
 def load_model_from_checkpoint(problem, model_args, device):
     model = model_args.model
     model_path = model_args.model_path
-    width = model_args.width
+    hidden_dim = getattr(model_args, 'hidden_dim', None) or getattr(model_args, 'width', None)
+    if hidden_dim is None:
+        raise ValueError("Must provide either 'hidden_dim' or 'width' in model config")
     max_iters = model_args.max_iters
     epoch = 0
     optimizer = None
@@ -211,8 +207,8 @@ def load_model_from_checkpoint(problem, model_args, device):
             in_channels = 3
 
     extra_args = {k: v for k, v in dict(model_args).items() 
-                  if k not in ['model', 'model_path', 'width', 'max_iters', 'test_iterations', 'in_channels']}
-    net = get_model(model, width, in_channels=in_channels, max_iters=max_iters, **extra_args)
+                  if k not in ['model', 'model_path', 'width', 'hidden_dim', 'max_iters', 'test_iterations', 'in_channels']}
+    net = get_model(model, hidden_dim, in_channels=in_channels, max_iters=max_iters, **extra_args)
     net = net.to(device)
     if device == "cuda":
         net = torch.nn.DataParallel(net)

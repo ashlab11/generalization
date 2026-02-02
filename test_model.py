@@ -18,6 +18,7 @@ import json
 
 import hydra
 import torch
+import wandb
 from omegaconf import DictConfig, OmegaConf
 
 import deepthinking as dt
@@ -40,6 +41,17 @@ def main(cfg: DictConfig):
     log.info("test_model.py main() running.")
     log.info(OmegaConf.to_yaml(cfg))
 
+    # Initialize wandb with model info
+    run_name = getattr(cfg, "run_id", None) or None
+    wandb.init(
+        project='deep-thinking',
+        name=run_name,
+        config=OmegaConf.to_container(cfg, resolve=True)
+    )
+    if not getattr(cfg, "run_id", None):
+        cfg.run_id = wandb.run.name
+        wandb.config.update({"run_id": cfg.run_id}, allow_val_change=True)
+
     training_args = OmegaConf.load(os.path.join(cfg.problem.model.model_path, ".hydra/config.yaml"))
     cfg_keys_to_load = [("hyp", "alpha"),
                         ("hyp", "epochs"),
@@ -49,7 +61,7 @@ def main(cfg: DictConfig):
                         ("model", "model"),
                         ("hyp", "optimizer"),
                         ("hyp", "train_mode"),
-                        ("model", "width")]
+                        ("model", "hidden_dim")]
     for k1, k2 in cfg_keys_to_load:
         cfg["problem"][k1][k2] = training_args["problem"][k1][k2]
     cfg.problem.train_data = cfg.problem.train_data
@@ -65,6 +77,12 @@ def main(cfg: DictConfig):
                                                                                  cfg.problem.model,
                                                                                  device)
     pytorch_total_params = sum(p.numel() for p in net.parameters())
+    
+    wandb.config.update({
+        "total_params_M": round(pytorch_total_params / 1e6, 3),
+        "model_architecture": cfg.problem.model.model,
+    }, allow_val_change=True)
+    
     log.info(f"This {cfg.problem.model.model} has {pytorch_total_params/1e6:0.3f} million parameters.")
     ####################################################
 
@@ -102,7 +120,48 @@ def main(cfg: DictConfig):
     log.info(f"{dt.utils.now()} Val bitwise accuracy: {val_bit_acc}")
     log.info(f"{dt.utils.now()} Testing bitwise accuracy (hard data): {test_bit_acc}")
 
-    model_name_str = f"{cfg.problem.model.model}_width={cfg.problem.model.width}"
+    # Log to wandb
+    last_iter = test_iterations[-1]
+    wandb_dict = {}
+    
+    if not cfg.quick_test:
+        if train_acc is not None:
+            wandb_dict["test/train_acc"] = train_acc[last_iter]
+        if val_acc is not None:
+            wandb_dict["test/val_acc"] = val_acc[last_iter]
+        if train_bit_acc is not None:
+            wandb_dict["test/train_bit_acc"] = train_bit_acc[last_iter]
+        if val_bit_acc is not None:
+            wandb_dict["test/val_bit_acc"] = val_bit_acc[last_iter]
+    
+    if test_acc is not None:
+        wandb_dict["test/hard_acc"] = test_acc[last_iter]
+    if test_bit_acc is not None:
+        wandb_dict["test/hard_bit_acc"] = test_bit_acc[last_iter]
+    
+    # Create accuracy vs iterations plot
+    if not cfg.quick_test:
+        plot = wandb.plot.line_series(
+            xs=test_iterations,
+            ys=[[test_acc[i] for i in test_iterations],
+                [val_acc[i] for i in test_iterations] if val_acc else [],
+                [train_acc[i] for i in test_iterations] if train_acc else []],
+            keys=["test", "val", "train"],
+            title="Accuracy vs Iterations",
+            xname="iterations")
+        wandb_dict['test/accuracy_plot'] = plot
+    else:
+        plot = wandb.plot.line_series(
+            xs=test_iterations,
+            ys=[[test_acc[i] for i in test_iterations]],
+            keys=["test"],
+            title="Accuracy vs Iterations",
+            xname="iterations")
+        wandb_dict['test/accuracy_plot'] = plot
+    
+    wandb.log(wandb_dict)
+
+    model_name_str = f"{cfg.problem.model.model}_hidden_dim={cfg.problem.model.hidden_dim}"
     stats = OrderedDict([("epochs", cfg.problem.hyp.epochs),
                          ("lr", cfg.problem.hyp.lr),
                          ("lr_factor", cfg.problem.hyp.lr_factor),
@@ -132,8 +191,4 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    # Only generate random run_id if not provided via command line
-    if not any("run_id=" in arg for arg in sys.argv):
-        run_id = dt.utils.generate_run_id()
-        sys.argv.append(f"+run_id={run_id}")
     main()

@@ -91,7 +91,7 @@ python train_model.py \
     problem.model.test_iterations.low=1 \
     problem.model.test_iterations.high=500 \
     problem.hyp.rand_method=basic \
-    problem.model.width=256 \
+    problem.model.hidden_dim=256 \
     problem.model.norm_type=$NORM_TYPE \
     problem.model.attn_type=$ATTN_TYPE \
     problem.model.num_sinks=$SINK \

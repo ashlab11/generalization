@@ -29,6 +29,8 @@ plots/
 launch/my_launch/
 output_default
 .vscode/
+stuff_to_do.md
+*.out
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,3 +1,4 @@
+from sympy import Q
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
@@ -5,7 +6,7 @@ from itertools import permutations
 from math import factorial
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-
+from torchtune.modules import RotaryPositionalEmbeddings
 #Sliding window for local attention
 WINDOW_SIZE = 5
 def get_sliding_window(sinks):
@@ -34,12 +35,14 @@ def get_sliding_window_2d(sinks, width):
 class ConvAttn(nn.Module):
     def __init__(self, input_dim, output_dim):
         super().__init__()
-        self.conv1 = nn.Conv1d(input_dim, output_dim, kernel_size=3,
+        self.lin = nn.Linear(input_dim, output_dim)
+        self.conv1 = nn.Conv1d(output_dim, output_dim, kernel_size=3,
                                stride=1, padding=1, bias=False)
         self.conv2 = nn.Conv1d(output_dim, output_dim, kernel_size=3,
                                stride=1, padding=1, bias=False)
     def forward(self, x):
         #[B, L, (2)D]
+        x = F.relu(self.lin(x))
         x = x.transpose(1, 2) #[B, D (C), L]
         x = self.conv2(F.relu(self.conv1(x)))
         return x.transpose(1, 2) #[B, L, D]
@@ -47,9 +50,10 @@ class ConvAttn(nn.Module):
 #Multi-headed attention with different attention methods
 class MHA(nn.Module):
     def __init__(self, input_dim, output_dim, num_heads, attn_type = 'full', 
-                 qk_normalization = False, num_sinks=1):
+                 qk_normalization = False, num_sinks=1, max_seq_len = 512):
         super().__init__()
-        self.input_dim = output_dim
+        self.input_dim = input_dim
+        self.output_dim = output_dim
         self.num_heads = num_heads
         self.head_dim = output_dim // num_heads
         self.attn_type = attn_type
@@ -61,6 +65,7 @@ class MHA(nn.Module):
         
         self.q_norm = nn.RMSNorm(self.head_dim) if qk_normalization else nn.Identity()
         self.k_norm = nn.RMSNorm(self.head_dim) if qk_normalization else nn.Identity()
+        self.rope = RotaryPositionalEmbeddings(dim=self.head_dim, max_seq_len=max_seq_len)
         
         if self.num_sinks > 0:
             self.sink_k = nn.Parameter(torch.zeros(num_sinks, num_heads, self.head_dim))
@@ -78,10 +83,14 @@ class MHA(nn.Module):
         qkv = self.qkv(x)  # (B, L, 3*D)
         q, k, v = qkv.chunk(3, dim=-1)  # Each: (B, L, D)
         
-        # Reshape to (B, H, L, D)
-        q = q.reshape(B, self.num_heads, L, self.head_dim)
-        k = k.reshape(B, self.num_heads, L, self.head_dim)
-        v = v.reshape(B, self.num_heads, L, self.head_dim)
+        # Reshape to (B, L, N, D)
+        q = q.reshape(B, L, self.num_heads, self.head_dim)
+        k = k.reshape(B, L, self.num_heads, self.head_dim)
+        v = v.reshape(B, L, self.num_heads, self.head_dim)
+        
+        q = self.rope(q).transpose(1, 2)
+        k = self.rope(k).transpose(1, 2)
+        v = v.transpose(1, 2)
         
         q, k = self.q_norm(q), self.k_norm(k)
         
@@ -112,7 +121,7 @@ class MHA(nn.Module):
             self._compute_attention_stats(q, k, L)
             
         # Reshape back: (B, num_heads, L, head_dim) -> (B, L, num_heads, head_dim) -> (B, L, D)
-        out = out.transpose(1, 2).reshape(B, L, self.hidden_dim)
+        out = out.transpose(1, 2).reshape(B, L, self.output_dim)
         out = self.out_proj(out)
         return out 
 
@@ -259,11 +268,11 @@ class AttentionBlock(nn.Module):
         if not self.recall_inner:
             x = self.injection_func(x, h)
             
-        def run_block(block, x_in):
-            shortcut = x_in
+        def run_block(block, x):
+            shortcut = x
+            x = self.pre_norm_func(x)
             if self.recall_inner:
                 x = self.injection_func(x, h)
-            x = self.pre_norm_func(x)
             x = block(x)
             x = self.post_norm_func(self.residual_func(shortcut, self.peri_norm_func(x)))
             return x

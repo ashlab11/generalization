@@ -1,2 +1,6 @@
-Weird idea: what if we do an EMA over the activations themselves? Something you can only do on a looped transformer
-Would sort of work with brains? Larger activations make the neuron stay up for longer? Does that count 
+Somehow I need to figure out how to deal with 1D and 2D attention
+Start with just 1D attention, make sure it works with prefix-sum, THEN move to harder attn mechanisms
+
+**Interacting factors**
+1. 1D needs either local attention or full attention
+2. 

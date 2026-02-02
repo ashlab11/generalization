@@ -6,27 +6,29 @@
 #SBATCH --gres=gpu:1
 #SBATCH -N 1
 #SBATCH --partition=gpu-he
-#SBATCH --constraint=mig
+#SBATCH --constraint=nomig
 
 source .venv/bin/activate
 
 # Run training
 python train_model.py \
-    name=rule110 \
-    +run_id=rule110_full \
-    problem=rule110 \
-    problem/model=dt_transformer \
+    name=conv_low_softmin \
+    +run_id=conv_low_softmin \
+    problem=prefix_sums \
+    problem/model=transformer \
     problem.hyp.optimizer=adamw \
     problem.hyp.weight_decay=0.01 \
+    problem.model.num_sinks=1 \
+    problem.hyp.train_mode=softmin \
     problem.model.test_iterations.high=500 \
-    problem.model.width=256 \
+    problem.model.hidden_dim=256 \
     problem.model.norm_type=peri \
-    problem.model.attn_type=full \
+    problem.model.attn_type=conv \
     +problem.model.qk_normalization=true \
-    problem.model.injection_type=none \
+    problem.model.injection_type=concat \
     problem.model.residual_method=gru \
-    +problem.model.full_concat=true \
-    problem.hyp.lr=0.0001 \
+    problem.model.recall_inner=true \
+    problem.hyp.lr=0.001 \
     problem.hyp.use_amp=true \
-    +sweep_name=rule110
+    +sweep_name=generalization
 

@@ -42,7 +42,7 @@ python train_model.py \
     +run_id=$EXP_NAME \
     problem.model.test_iterations.high=500 \
     problem.model.num_blocks=1 \
-    problem.model.width=256 \
+    problem.model.hidden_dim=256 \
     problem.model.injection_type=$INJECTION_TYPE \
     problem.model.norm_type=$NORM_TYPE \
     problem.model.recall_inner=$RECALL_INNER \

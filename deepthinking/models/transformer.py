@@ -24,7 +24,7 @@ class DTTransformer(nn.Module):
                  injection_type='concat', norm_type='peri', norm_before_head=True,
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
-                 in_channels = 1, max_seq_len=None, num_sinks=0, ema_act = False,
+                 in_channels = 1, num_sinks=0, ema_act = False,
                  noise_prob = 0.0, noise_scale = 0.01, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -32,10 +32,19 @@ class DTTransformer(nn.Module):
         self.ema_act = ema_act
         
         #Core blocks
-        self.recur_blocks = nn.ModuleList([AttentionBlock(hidden_dim, lanes, injection_type, norm_type, recall_inner, 
-                                           qk_normalization, residual_method, attn_type, num_sinks, 
-                                            post_relu = post_relu) 
-                                           for _ in num_blocks])
+        self.recur_blocks = nn.ModuleList([AttentionBlock(
+                                           hidden_dim = hidden_dim,
+                                           lanes = lanes,
+                                           injection_type = injection_type,
+                                           norm_type = norm_type,
+                                           recall_inner = recall_inner,
+                                           qk_normalization = qk_normalization, 
+                                           residual_method = residual_method,
+                                           attn_type = attn_type,
+                                           num_sinks=num_sinks,
+                                           post_relu=post_relu,
+                                           ) 
+                                           for _ in range(num_blocks)])
         self.head = nn.Sequential(
             nn.RMSNorm(hidden_dim) if norm_before_head else nn.Identity(),
             nn.Linear(hidden_dim, hidden_dim), 
@@ -87,14 +96,15 @@ class DTTransformer(nn.Module):
             # (B, L) -> (B, 1, L) -> (B, L, 1) for 1D sequences without channel dimension
             x = x.unsqueeze(1).transpose(1, 2)
 
-        initial_thought = self.init_norm(self.projection(x))
+        initial_thought = self.projection(x)
+        #initial_thought = self.init_norm(initial_thought)
 
         if interim_thought is None:
             interim_thought = initial_thought
         elif interim_thought.dim() == 3 and interim_thought.size(1) == self.hidden_dim:
             interim_thought = interim_thought.transpose(1, 2)
         
-        if self.residual_method == 'mhc' and interim_thought.dim() == 3:
+        if self.is_mhc and interim_thought.dim() == 3:
             interim_thought = interim_thought.unsqueeze(0).repeat(self.lanes, 1, 1, 1)
             
         if spatial_shape is None:

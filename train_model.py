@@ -156,12 +156,12 @@ def main(cfg: DictConfig):
             model = net.module if isinstance(net, torch.nn.DataParallel) else net
             
             #QKV
-            qkv = model.recur_blocks_inject[0].attn.qkv.weight
+            qkv = model.recur_blocks[0].attn.qkv.weight
             Q, K, _ = qkv.chunk(3, dim=0)
             spectral_product = torch.linalg.matrix_norm(Q, 2) * torch.linalg.matrix_norm(K, 2)
             wandb_dict['diagnostics/spectral_product'] = spectral_product.item()
             
-            O = model.recur_blocks_inject[0].attn.out_proj.weight
+            O = model.recur_blocks[0].attn.out_proj.weight
             wandb_dict['diagnostics/out_spectral'] = torch.linalg.matrix_norm(O, 2).item()
         except Exception as e:
             logging.getLogger().warning(f"Diagnostics calculation failed: {e}")
@@ -170,7 +170,7 @@ def main(cfg: DictConfig):
         try:    
             #Inject
             if cfg.problem.model.injection_type in ['concat', 'linear']:
-                inject_block = model.recur_blocks_inject[0]
+                inject_block = model.recur_blocks[0]
                 Wx, Wh = inject_block.Wx, inject_block.Wh
                 Wh_weight = Wh.weight
                 Wx_weight = Wx.lin.weight if hasattr(Wx, 'lin') else Wx.weight
@@ -188,7 +188,7 @@ def main(cfg: DictConfig):
         
         try:
             #MLP
-            mlp = model.recur_blocks_inject[0].mlp
+            mlp = model.recur_blocks[0].mlp
             W1 = torch.linalg.matrix_norm(mlp[0].weight, 2).item()
             W2 = torch.linalg.matrix_norm(mlp[2].weight, 2).item()
             wandb_dict['diagnostics/mlp_gain'] = W1 * W2
