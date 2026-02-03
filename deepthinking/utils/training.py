@@ -17,6 +17,7 @@ import math
 
 import torch
 from torch.nn import Softmin
+import torch.nn.functional as F
 from icecream import ic
 from tqdm import tqdm
 
@@ -66,7 +67,51 @@ class TrainingSetup:
     rand_method: "typing.Any" = "basic"  # 'basic', 'geiping', or int for min detach steps
     use_amp: bool = False  # Use automatic mixed precision (bfloat16)
     scaler: "typing.Any" = None  # GradScaler for mixed precision training
+    softmin_beta: float = 1.0
+    softmin_lambda: float = 0.1
 
+
+def compute_first_n_iter_loss(all_outputs, targets, criterion, mask=None, n=5):
+    """Compute average loss over first n iterations. Returns [n] tensor of per-iteration averages."""
+    B, I, C, L = all_outputs.size()
+    first_n_outputs = all_outputs[:, :n, :, :]  # [B, n, C, L]
+    targets_exp = targets.unsqueeze(1).expand(-1, n, -1)  # [B, n, L]
+    outputs_flat = first_n_outputs.reshape(B * n, C, L)
+    targets_flat = targets_exp.reshape(B * n, L)
+    losses = criterion(outputs_flat, targets_flat).reshape(B, n, L).float()
+    if mask is not None:
+        mask_exp = mask.unsqueeze(1).expand(-1, n, -1)
+        losses = losses * mask_exp
+        losses = losses[mask_exp > 0].reshape(B, n, -1) if losses.numel() > 0 else losses
+    return losses.mean(dim=-1).mean(dim=0)  # [n]
+
+def compute_loss_gradient_sensitivity(loss_all_outputs, beta, lam):
+    """Compute gradient of total loss w.r.t. each per-iteration loss.
+    Returns [I] tensor of per-iteration sensitivity (mean absolute gradient)."""
+    B, I, L = loss_all_outputs.shape
+    L_detached = loss_all_outputs.detach().clone().requires_grad_(True)
+    
+    # Recompute total loss using detached loss tensor
+    zero_vec = torch.zeros_like(L_detached[:, :1, :])
+    log_neg = -beta * L_detached
+    log_sum_neg = torch.logsumexp(log_neg, dim=1)  # [B, L]
+    softmin_loss = -log_sum_neg / beta + math.log(I) / beta
+    
+    relu_diff = F.relu(L_detached[:, 1:, :] - L_detached[:, :-1, :])
+    relu_diff = torch.cat([zero_vec, relu_diff], dim=1)
+    relu_diff_cumsum = torch.cumsum(relu_diff.flip(1), dim=1).flip(1)
+    relu_suffix = torch.cat([relu_diff_cumsum[:, 1:, :], zero_vec], dim=1)
+    weights = torch.softmax(log_neg, dim=1).detach()
+    relu_loss = (weights * relu_suffix).sum(dim=1)
+    
+    total = ((1 - lam) * softmin_loss + lam * relu_loss).mean()
+    
+    # Compute gradients w.r.t. per-iteration losses
+    g = torch.autograd.grad(total, L_detached, retain_graph=False)[0]  # [B, I, L]
+    
+    # Summarize per-iteration sensitivity (mean absolute gradient)
+    g_iter = g.abs().mean(dim=(0, 2))  # [I] - average over batch and sequence
+    return g_iter
 
 def get_output_for_prog_loss(inputs, max_iters, net, rand_method = 'basic'):
     # get features from n iterations to use as input
@@ -122,14 +167,14 @@ def get_output_for_prog_loss(inputs, max_iters, net, rand_method = 'basic'):
 
 def train(net, loaders, mode, train_setup, device, epoch=0):
     if mode == "progressive":
-        train_loss, acc, bit_acc = train_progressive(net, loaders, train_setup, device, epoch)
+        train_loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = train_progressive(net, loaders, train_setup, device, epoch)
     elif mode == 'softmin':
-        train_loss, acc, bit_acc = train_softmin(net, loaders, train_setup, device, epoch)
+        train_loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = train_softmin(net, loaders, train_setup, device, epoch)
     else:
         raise ValueError(f"{ic.format()}: train_{mode}() not implemented.")
-    return train_loss, acc, bit_acc
+    return train_loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity
 
-def train_softmin(net, loaders, train_setup, device, epoch = 0, beta = 1, lam = 0.1):
+def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=None):
     #Formula:
     #Ideal loss is the minimum loss x_* + lambda * sum(relu(x_k - x_*)) for k > *
     #If there is a minimum loss that can be reached, reach it. Afterwards, do not get worse.
@@ -147,7 +192,14 @@ def train_softmin(net, loaders, train_setup, device, epoch = 0, beta = 1, lam = 
     clip = train_setup.clip
     use_amp = train_setup.use_amp
     scaler = train_setup.scaler
-    criterion = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+    criterion = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=-100, label_smoothing=0.01)
+    if beta is None:
+        beta = getattr(train_setup, "softmin_beta", 1.0)
+    if lam is None:
+        lam = getattr(train_setup, "softmin_lambda", 0.1)
+    beta = float(beta)
+    if beta <= 0:
+        raise ValueError(f"softmin_beta must be > 0, got {beta}")
     
     train_loss = 0
     correct = 0
@@ -156,6 +208,11 @@ def train_softmin(net, loaders, train_setup, device, epoch = 0, beta = 1, lam = 
     bit_total = 0
     track_every_n = 10
     last_h_stats = None  # Keep track of last h_stats for debugging
+    
+    # Track CE loss for first 5 iterations
+    first_five_iter_ce_losses = []
+    # Track gradient sensitivity per iteration
+    loss_grad_sensitivity = []
     
     for batch_idx, (inputs, targets) in enumerate(tqdm(trainloader, leave=False)):
         inputs, targets = inputs.to(device), targets.to(device).long()
@@ -183,17 +240,33 @@ def train_softmin(net, loaders, train_setup, device, epoch = 0, beta = 1, lam = 
                 all_outputs.view(B * I, C, L),
                 targets_exp.reshape(B * I, L),
             )
-            loss_all_outputs = loss_all_outputs.view(B, I, L)
+            loss_all_outputs = loss_all_outputs.view(B, I, L).float()
             
-            neg_exps = torch.exp(-loss_all_outputs * beta)
-            pos_exps = torch.exp(loss_all_outputs * beta)
-            sum_neg_exps = torch.sum(neg_exps, dim = 1)
-            log_cumsum_rev_pos_exps = torch.log(torch.cumsum(pos_exps.flip(1)).flip(1)) #[B, x, L] is log of sum from x to [B, max, L]
+            # Compute average CE loss for first 5 iterations (for diagnostic)
+            first_five_iter_means = compute_first_n_iter_loss(all_outputs, targets, criterion, n=15)
+            first_five_iter_ce_losses.append(first_five_iter_means)
             
+            zero_vec = torch.zeros_like(loss_all_outputs[:, :1, :])
+
+            # Stable log-space computation with temperature beta.
+            log_neg = -beta * loss_all_outputs
+            log_sum_neg = torch.logsumexp(log_neg, dim=1)  # [B, L]
+            softmin_loss = -log_sum_neg / beta + math.log(I) / beta #Term added for log mean rather than log sum
             
-            softmin_loss = -torch.log(sum_neg_exps)
-            softmax_loss = 1 / sum_neg_exps * torch.sum(neg_exps * log_cumsum_rev_pos_exps, dim = 1)
-            loss = (1 - lam) * softmin_loss + lam * softmax_loss
+            relu_diff = F.relu(loss_all_outputs[:, 1:, :] - loss_all_outputs[:, :-1, :])
+            relu_diff = torch.cat([zero_vec, relu_diff], dim=1) #[B, I, L]
+            relu_diff_cumsum = torch.cumsum(relu_diff.flip(1), dim=1).flip(1) # sum_{r>=t} relu_diff[r]
+            relu_suffix = torch.cat([relu_diff_cumsum[:, 1:, :], zero_vec], dim=1)
+            
+            weights = torch.softmax(log_neg, dim=1).detach()
+            relu_loss = (weights * relu_suffix).sum(dim = 1)
+            
+            loss = ((1 - lam) * softmin_loss + lam * relu_loss).mean()
+            
+            # Compute gradient sensitivity diagnostic (on first batch only to save compute)
+            if batch_idx == 0:
+                g_iter = compute_loss_gradient_sensitivity(loss_all_outputs, beta, lam)
+                loss_grad_sensitivity.append(g_iter)
             
             # NaN detection in loss (before backward)
             if torch.isnan(loss):
@@ -247,11 +320,17 @@ def train_softmin(net, loaders, train_setup, device, epoch = 0, beta = 1, lam = 
     train_loss = train_loss / (batch_idx + 1)
     acc = 100.0 * correct / total
     bit_acc = 100.0 * bit_correct / bit_total if bit_total > 0 else 0.0
+    
+    # Compute average CE loss over first 5 iterations
+    first_five_avg = torch.stack(first_five_iter_ce_losses).mean().item() if first_five_iter_ce_losses else 0.0
+    
+    # Compute gradient sensitivity per iteration
+    grad_sensitivity = torch.stack(loss_grad_sensitivity).mean(dim=0).cpu() if loss_grad_sensitivity else None
 
     lr_scheduler.step()
     warmup_scheduler.dampen()
 
-    return train_loss, acc, bit_acc
+    return train_loss, acc, bit_acc, first_five_avg, grad_sensitivity
     
     
 
@@ -278,6 +357,9 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
     bit_total = 0
     track_every_n = 10
     last_h_stats = None  # Keep track of last h_stats for debugging
+    
+    # Track CE loss for first 5 iterations
+    first_five_iter_ce_losses = []
 
     for batch_idx, (inputs, targets) in enumerate(tqdm(trainloader, leave=False)):
         inputs, targets = inputs.to(device), targets.to(device).long()
@@ -291,7 +373,13 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
         autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
         
         with autocast_context:
-            outputs_max_iters, _ = net(inputs, iters_to_do=max_iters)
+            # Get outputs for first 5 iterations for diagnostic
+            all_outputs = net(inputs, iters_to_do=max_iters, return_all=True)
+            outputs_max_iters = all_outputs[:, -1, :, :]  # Last iteration output
+            
+            # Compute average CE loss for first 5 iterations (for diagnostic)
+            first_five_iter_means = compute_first_n_iter_loss(all_outputs, targets, criterion, mask if problem == "mazes" else None, n=15)
+            first_five_iter_ce_losses.append(first_five_iter_means)
 
             # NaN detection in outputs
             if torch.isnan(outputs_max_iters).any():
@@ -376,8 +464,11 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
     train_loss = train_loss / (batch_idx + 1)
     acc = 100.0 * correct / total
     bit_acc = 100.0 * bit_correct / bit_total if bit_total > 0 else 0.0
+    
+    # Compute average CE loss over first 5 iterations
+    first_five_avg = torch.stack(first_five_iter_ce_losses).mean().item() if first_five_iter_ce_losses else 0.0
 
     lr_scheduler.step()
     warmup_scheduler.dampen()
 
-    return train_loss, acc, bit_acc
+    return train_loss, acc, bit_acc, first_five_avg

@@ -15,6 +15,7 @@ from datetime import datetime
 import torch
 from icecream import ic
 from torch.optim import SGD, Adam, AdamW, Muon, Optimizer
+from torch_optimizer import Shampoo
 from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingLR
 
 import deepthinking.models as models
@@ -85,7 +86,8 @@ def get_optimizer(optim_args, model_args, net, state_dict):
     lr_factor = optim_args.lr_factor
     warmup_period = optim_args.warmup_period
     weight_decay = getattr(optim_args, 'weight_decay', 2e-4)
-
+    eps = getattr(optim_args, 'eps', 1e-8)  # Default AdamW eps
+            
     if optim_args.lr_throttle:
         # Reducing the lr here for the recurrent layers helps with stability,
         # To date (July 21, 2021), we may only need this for maze models.
@@ -102,7 +104,25 @@ def get_optimizer(optim_args, model_args, net, state_dict):
     if optimizer_name == "sgd":
         optimizer = SGD(all_params, lr=lr, weight_decay=weight_decay, momentum=0.9)
     elif optimizer_name == "adam":
-        optimizer = Adam(all_params, lr=lr, weight_decay=weight_decay)
+        optimizer = Adam(all_params, lr=lr, weight_decay=weight_decay, eps=eps)
+    elif optimizer_name == 'shampoo':        
+        # For Shampoo, exclude bias and norm parameters from weight decay
+        decay_params = []
+        no_decay_params = []
+        for name, param in net.named_parameters():
+            is_bias = name.endswith('.bias') or 'bias' in name.lower()
+            is_norm = any(norm_name in name.lower() for norm_name in ['norm', 'ln', 'bn', 'gn', 'rmsnorm', 'layernorm'])
+            
+            if is_bias or is_norm:
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+        
+        all_params = [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0}
+        ]
+        optimizer = Shampoo(all_params, lr=lr)
     elif optimizer_name == "adamw":
         # For transformers, exclude bias and norm parameters from weight decay
         actual_net = net.module if isinstance(net, torch.nn.DataParallel) else net
@@ -125,9 +145,9 @@ def get_optimizer(optim_args, model_args, net, state_dict):
                 {"params": decay_params, "weight_decay": weight_decay},
                 {"params": no_decay_params, "weight_decay": 0.0}
             ]
-            optimizer = AdamW(all_params, lr=lr)
+            optimizer = AdamW(all_params, lr=lr, eps=eps)
         else:
-            optimizer = AdamW(all_params, lr=lr, weight_decay=weight_decay)
+            optimizer = AdamW(all_params, lr=lr, weight_decay=weight_decay, eps=eps)
     elif optimizer_name == "muon":        
         class MultipleOptimizer(Optimizer):
             def __init__(self, *optimizers):

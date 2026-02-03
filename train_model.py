@@ -15,6 +15,8 @@ import logging
 import os
 from collections import OrderedDict
 import wandb
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 import hydra
 import numpy as np
@@ -88,6 +90,11 @@ def main(cfg: DictConfig):
                                                                        optimizer_state_dict)
     rand_method = getattr(cfg.problem.hyp, 'rand_method', 'basic')
     use_amp = getattr(cfg.problem.hyp, 'use_amp', False)
+    if device == "cuda" and not use_amp:
+        # Ensure true FP32 for fp32 runs (avoid TF32 on Ampere+).
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        log.info("TF32 disabled for fp32 run.")
     scaler = torch.amp.GradScaler('cuda') if use_amp else None
     log.info(f"Using automatic mixed precision: {use_amp}")
     train_setup = dt.TrainingSetup(optimizer=optimizer,
@@ -99,7 +106,9 @@ def main(cfg: DictConfig):
                                    problem=cfg.problem.name,
                                    rand_method=rand_method,
                                    use_amp=use_amp,
-                                   scaler=scaler)
+                                   scaler=scaler,
+                                   softmin_beta=getattr(cfg.problem.hyp, "softmin_beta", 1.0),
+                                   softmin_lambda=getattr(cfg.problem.hyp, "softmin_lambda", 0.1))
     ####################################################
 
     ####################################################
@@ -109,13 +118,14 @@ def main(cfg: DictConfig):
     best_so_far = False
 
     prev_state = None  # Keep previous epoch state for debugging
+    grad_fraction_history = []  # Store gradient fractions per epoch for plotting
     for epoch in range(start_epoch, cfg.problem.hyp.epochs):
         # Save state before training (so we can replay if NaN happens)
         prev_state = {"net": net.state_dict(), "epoch": epoch, "optimizer": optimizer.state_dict()}
         
         try:
             start = time.time()
-            loss, acc, bit_acc = dt.train(net, loaders, cfg.problem.hyp.train_mode, train_setup, device, epoch)
+            loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = dt.train(net, loaders, cfg.problem.hyp.train_mode, train_setup, device, epoch)
             train_time = time.time() - start
         except ValueError as e:
             # NaN detected! Save the pre-crash checkpoint
@@ -139,6 +149,18 @@ def main(cfg: DictConfig):
         log.info(f"Training bitwise accuracy at epoch {epoch}: {bit_acc}")
         log.info(f"Val accuracy at epoch {epoch}: {val_acc}")
         log.info(f"Val bitwise accuracy at epoch {epoch}: {val_bit_acc}")
+        log.info(f"Average CE loss over first 5 iterations at epoch {epoch}: {first_five_ce_avg:.6f}")
+        
+        # Log gradient sensitivity per iteration
+        if grad_sensitivity is not None:
+            grad_sens_str = ", ".join([f"iter{i}: {v:.6f}" for i, v in enumerate(grad_sensitivity)])
+            log.info(f"Loss gradient sensitivity per iteration at epoch {epoch}: {grad_sens_str}")
+            # Log fraction of mass per iteration
+            total_mass = grad_sensitivity.sum().item()
+            if total_mass > 0:
+                fraction_mass = grad_sensitivity / total_mass
+                fraction_str = ", ".join([f"iter{i}: {v:.3f}" for i, v in enumerate(fraction_mass)])
+                log.info(f"Fraction of gradient mass per iteration: {fraction_str}")
 
         # Prepare wandb log dict
         wandb_dict = {
@@ -147,8 +169,41 @@ def main(cfg: DictConfig):
             "train/bit_acc": bit_acc,
             "train/time": train_time, 
             "train/val_acc": val_acc,
-            "train/val_bit_acc": val_bit_acc
+            "train/val_bit_acc": val_bit_acc,
+            "train/first_five_iter_ce_avg": first_five_ce_avg
         }
+        
+        # Add gradient sensitivity to wandb and create accumulating plot
+        if grad_sensitivity is not None:
+            total_mass = grad_sensitivity.sum().item()
+            if total_mass > 0:
+                fraction_mass = (grad_sensitivity / total_mass).cpu().tolist()
+                # Store for accumulating plot
+                grad_fraction_history.append(fraction_mass)
+                
+                # Create accumulating line plot with colors getting bluer over epochs
+                iterations = list(range(1, len(fraction_mass) + 1))
+                num_epochs = len(grad_fraction_history)
+                
+                # Create matplotlib plot with blue gradient
+                fig, ax = plt.subplots(figsize=(12, 7))
+                # Use colormap that goes from light to dark blue
+                colors = cm.Blues(np.linspace(0.3, 1.0, num_epochs))
+                
+                for i, (epoch_idx, frac_data) in enumerate(zip(range(start_epoch, epoch + 1), grad_fraction_history)):
+                    ax.plot(iterations, frac_data, color=colors[i], linewidth=1.5)
+                
+                ax.set_xlabel("iteration", fontsize=12)
+                ax.set_ylabel("gradient fraction", fontsize=12)
+                ax.set_title("Gradient Fraction per Iteration (Accumulating)", fontsize=14, pad=10)
+                ax.grid(True, alpha=0.3)
+                
+                # Adjust layout to prevent cropping
+                plt.subplots_adjust(left=0.1, right=0.75, top=0.9, bottom=0.1)
+                
+                # Log as wandb image
+                wandb_dict[f"grad/{cfg.run_id}_grad_fraction_plot"] = wandb.Image(fig)
+                plt.close(fig)
         
         #Diagnostics, only for transformer
         try:

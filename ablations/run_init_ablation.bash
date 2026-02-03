@@ -5,7 +5,7 @@
 #SBATCH --mem=64G
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-3
+#SBATCH --array=4,6
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=nomig
 
@@ -15,20 +15,52 @@ IDX=$SLURM_ARRAY_TASK_ID
 
 case $IDX in
     0)
-        EXP_NAME="init_default"
+        EXP_NAME="default_amp_prog"
         INIT_METHOD="default"
+        USE_AMP=true
+        TRAIN_MODE="progressive"
         ;;
     1)
-        EXP_NAME="init_xavier"
+        EXP_NAME="xavier_amp_prog"
         INIT_METHOD="xavier"
+        USE_AMP=true
+        TRAIN_MODE="progressive"
         ;;
     2)
-        EXP_NAME="init_xavier_small"
-        INIT_METHOD="xavier_small"
+        EXP_NAME="default_fp32_prog"
+        INIT_METHOD="default"
+        USE_AMP=false
+        TRAIN_MODE="progressive"
         ;;
     3)
-        EXP_NAME="init_orthogonal"
-        INIT_METHOD="orthogonal"
+        EXP_NAME="xavier_fp32_prog"
+        INIT_METHOD="xavier"
+        USE_AMP=false
+        TRAIN_MODE="progressive"
+        ;;
+    4)
+        EXP_NAME="default_amp_new_softmin"
+        INIT_METHOD="default"
+        USE_AMP=true
+        TRAIN_MODE="softmin"
+        ;;
+    5)
+        EXP_NAME="xavier_amp_new_softmin"
+        INIT_METHOD="xavier"
+        USE_AMP=true
+        TRAIN_MODE="softmin"
+        ;;
+    6)
+        EXP_NAME="default_fp32_new_softmin"
+        INIT_METHOD="default"
+        USE_AMP=false
+        TRAIN_MODE="softmin"
+        ;;
+    7)
+        EXP_NAME="xavier_fp32_softmin"
+        INIT_METHOD="xavier"
+        USE_AMP=false
+        TRAIN_MODE="softmin"
         ;;
 esac
 
@@ -36,15 +68,15 @@ esac
 
 python train_model.py \
     name=init_ablation \
-    +run_id=$EXP_NAME\_softmin \
+    +run_id=$EXP_NAME\_eps \
     problem=prefix_sums \
     problem/model=transformer \
     problem.hyp.epochs=100 \
     problem.hyp.optimizer=adamw \
     problem.hyp.weight_decay=0.01 \
     problem.hyp.lr=0.001 \
-    problem.hyp.use_amp=true \
-    problem.hyp.train_mode=softmin \
+    problem.hyp.use_amp=$USE_AMP \
+    problem.hyp.train_mode=$TRAIN_MODE \
     problem.hyp.rand_method=basic \
     problem.model.test_iterations.low=1 \
     problem.model.test_iterations.high=500 \

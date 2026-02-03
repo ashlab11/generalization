@@ -96,6 +96,11 @@ def main(cfg: DictConfig):
                                      cfg.problem.model.test_iterations["high"] + 1))
 
     use_amp = getattr(cfg.problem.hyp, 'use_amp', False)
+    if device == "cuda" and not use_amp:
+        # Ensure true FP32 for fp32 runs (avoid TF32 on Ampere+).
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        log.info("TF32 disabled for fp32 run.")
     
     if cfg.quick_test:
         test_result = dt.test(net, [loaders["test"]], cfg.problem.hyp.test_mode, test_iterations,

@@ -16,7 +16,7 @@ python train_model.py \
     +run_id=conv_bottleneck_2 \
     problem=prefix_sums \
     problem/model=transformer \
-    problem.hyp.optimizer=adamw \
+    problem.hyp.optimizer=sgd \
     problem.hyp.weight_decay=0.01 \
     problem.model.num_sinks=1 \
     problem.hyp.train_mode=progressive \
