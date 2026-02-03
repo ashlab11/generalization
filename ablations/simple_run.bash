@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=transformer
-#SBATCH -o ablations/transformer/%A.out
+#SBATCH -o ablations/%A.out
 #SBATCH --time=4:00:00
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
@@ -12,14 +12,14 @@ source .venv/bin/activate
 
 # Run training
 python train_model.py \
-    name=conv_low_softmin \
-    +run_id=conv_low_softmin \
+    name=conv_bottleneck \
+    +run_id=conv_bottleneck_2 \
     problem=prefix_sums \
     problem/model=transformer \
     problem.hyp.optimizer=adamw \
     problem.hyp.weight_decay=0.01 \
     problem.model.num_sinks=1 \
-    problem.hyp.train_mode=softmin \
+    problem.hyp.train_mode=progressive \
     problem.model.test_iterations.high=500 \
     problem.model.hidden_dim=256 \
     problem.model.norm_type=peri \

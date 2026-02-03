@@ -9,6 +9,7 @@ recall_inner: false
 attn_type: local
 num_sinks: 0
 hidden_dropout: 0
+init_method: default
 max_iters: 30
 monotone_lambda: 0.0
 monotone_margin: 0.0

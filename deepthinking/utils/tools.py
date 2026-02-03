@@ -18,6 +18,7 @@ from torch.optim import SGD, Adam, AdamW, Muon, Optimizer
 from torch.optim.lr_scheduler import MultiStepLR, CosineAnnealingLR
 
 import deepthinking.models as models
+from deepthinking.models.init import apply_initialization
 from .mazes_data import prepare_maze_loader
 from .prefix_sums_data import prepare_prefix_loader
 from .cellular_data import prepare_cellular_loader
@@ -206,9 +207,12 @@ def load_model_from_checkpoint(problem, model_args, device):
         else:
             in_channels = 3
 
-    extra_args = {k: v for k, v in dict(model_args).items() 
-                  if k not in ['model', 'model_path', 'width', 'hidden_dim', 'max_iters', 'test_iterations', 'in_channels']}
+    extra_args = {k: v for k, v in dict(model_args).items()
+                  if k not in ['model', 'model_path', 'width', 'hidden_dim', 'max_iters',
+                               'test_iterations', 'in_channels', 'init_method']}
     net = get_model(model, hidden_dim, in_channels=in_channels, max_iters=max_iters, **extra_args)
+    if model_path is None:
+        apply_initialization(net, getattr(model_args, "init_method", "default"))
     net = net.to(device)
     if device == "cuda":
         net = torch.nn.DataParallel(net)

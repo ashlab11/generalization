@@ -47,7 +47,7 @@ def test(net, loaders, mode, iters, problem, device, use_amp=False, return_bitwi
     # Setup diagnostic hooks
     for m in net.modules():
         if hasattr(m, '__class__'):
-            if 'AttentionBlock1D' in str(type(m)) or 'ConcatAttentionBlock' in str(type(m)):
+            if 'AttentionBlock' in str(type(m)):
                 def block_hook(module, input, output):
                     if not diag_state["enabled"]:
                         return
