@@ -129,7 +129,7 @@ def train(net, loaders, mode, train_setup, device, epoch=0):
         raise ValueError(f"{ic.format()}: train_{mode}() not implemented.")
     return train_loss, acc, bit_acc
 
-def train_softmin(net, loaders, train_setup, device, epoch = 0, relu_prop = 0.1):
+def train_softmin(net, loaders, train_setup, device, epoch = 0, beta = 1, lam = 0.1):
     #Formula:
     #Ideal loss is the minimum loss x_* + lambda * sum(relu(x_k - x_*)) for k > *
     #If there is a minimum loss that can be reached, reach it. Afterwards, do not get worse.
@@ -185,20 +185,15 @@ def train_softmin(net, loaders, train_setup, device, epoch = 0, relu_prop = 0.1)
             )
             loss_all_outputs = loss_all_outputs.view(B, I, L)
             
-            beta = 1
-            p_t = torch.softmax(-beta * loss_all_outputs.detach(), dim=1)
+            neg_exps = torch.exp(-loss_all_outputs * beta)
+            pos_exps = torch.exp(loss_all_outputs * beta)
+            sum_neg_exps = torch.sum(neg_exps, dim = 1)
+            log_cumsum_rev_pos_exps = torch.log(torch.cumsum(pos_exps.flip(1)).flip(1)) #[B, x, L] is log of sum from x to [B, max, L]
             
-            softmin_loss = (p_t * loss_all_outputs).sum(dim=1)
             
-            relu_loss = torch.zeros(B, L, device=softmin_loss.device)
-            for t in range(I):
-                loss_diff = loss_all_outputs[:, (t+1):, :] - loss_all_outputs[:, t, :].unsqueeze(1)
-                pad = torch.zeros(B, t+1, L, device=loss_diff.device, dtype=loss_diff.dtype)
-                loss_diff = torch.cat([pad, loss_diff], dim = 1)
-                relu_loss += (p_t[:, t, :].unsqueeze(1) * torch.relu(loss_diff)).sum(dim=1)
-            
-            #Loss is [B, L] before mean
-            loss = (softmin_loss + relu_prop * relu_loss).mean()
+            softmin_loss = -torch.log(sum_neg_exps)
+            softmax_loss = 1 / sum_neg_exps * torch.sum(neg_exps * log_cumsum_rev_pos_exps, dim = 1)
+            loss = (1 - lam) * softmin_loss + lam * softmax_loss
             
             # NaN detection in loss (before backward)
             if torch.isnan(loss):
