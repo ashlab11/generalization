@@ -25,7 +25,7 @@ FIXED_PARAMS = {
     "problem.hyp.lr": 0.001,
     "problem.hyp.eps": 1e-8,  
     "problem.hyp.use_amp": True,  
-    "problem.hyp.train_mode": "softmin", 
+    "problem.hyp.train_mode": "progressive", 
     "problem.hyp.rand_method": "basic",
     "problem.model.test_iterations.low": 1,
     "problem.model.test_iterations.high": 500,
@@ -33,9 +33,9 @@ FIXED_PARAMS = {
     "problem.model.norm_type": "peri",
     "problem.model.attn_type": "conv",
     "problem.model.num_sinks": 1,
-    "problem.model.injection_type": "concat",
-    "problem.model.recall_inner": True,
-    "problem.model.residual_method": "gru",
+    "problem.model.injection_type": "linear",
+    "problem.model.recall_inner": False,
+    "problem.model.residual_method": "lstm",
     "problem.model.init_method": "default",  
     "+problem.model.qk_normalization": True,
     "+sweep_name": "softmin_sweep",
@@ -43,13 +43,22 @@ FIXED_PARAMS = {
 
 # Variables to sweep (overrides FIXED_PARAMS)
 SWEEP_VARS = {
-    "EPS": {
-        "values": [1e-4, 1e-8],
-        "config_path": "problem.hyp.eps",
-    },
     "USE_AMP": {
         "values": [True, False],
         "config_path": "problem.hyp.use_amp",
+        "names": ["bf16", "fp32"],  # Optional: custom names for run_id (defaults to formatted values)
+    }, 
+    "NORM_TYPE": {
+        'values': ['post', 'peri'], 
+        'config_path': 'problem.model.norm_type'
+    }, 
+    "RESIDUAL_METHOD": {
+        'values': ['add'], 
+        'config_path': 'problem.model.residual_method'
+    }, 
+    "TRAIN_MODE": {
+        'values': ['progressive'], 
+        'config_path': 'problem.hyp.train_mode'
     }
 }
 
@@ -70,7 +79,19 @@ SLURM_CONFIG = {
 def format_value(v):
     return str(v).lower() if isinstance(v, bool) else str(v)
 
-def build_command(combo, var_names, var_config_paths):
+def get_run_id_name(var_name, value, var_config):
+    """Get the name for run_id - use custom names if provided, otherwise format the value."""
+    if "names" in var_config:
+        # Find index of value in values list
+        value_idx = var_config["values"].index(value)
+        if value_idx < len(var_config["names"]):
+            return var_config["names"][value_idx]
+    # Default: format the value
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    return str(value).lower()
+
+def build_command(combo, var_names, var_config_paths, sweep_vars):
     """Build python train_model.py command for a combination."""
     cmd = ["python", "train_model.py"]
     
@@ -86,9 +107,12 @@ def build_command(combo, var_names, var_config_paths):
     for key, value in params.items():
         cmd.append(f"{key}={format_value(value)}")
     
-    # Generate run_id from sweep vars
-    name_parts = [format_value(combo[var_names.index(v)]) for v in var_names]
-    cmd.append(f"+run_id={'_'.join(name_parts)}")
+    # Generate run_id from sweep vars (use custom names if provided)
+    name_parts = [get_run_id_name(var_name, combo[var_names.index(var_name)], sweep_vars[var_name]) 
+                  for var_name in var_names]
+    run_id_str = f"{'_'.join(name_parts)}_linear"
+    # Quote the run_id to ensure Hydra treats it as a string
+    cmd.append(f'+run_id="{run_id_str}"')
     
     return cmd
 
@@ -121,7 +145,7 @@ def main():
     # Submit jobs
     jobs = []
     for combo in combinations:
-        cmd = build_command(combo, var_names, var_config_paths)
+        cmd = build_command(combo, var_names, var_config_paths, SWEEP_VARS)
         job = executor.submit(subprocess.run, cmd, check=True)
         jobs.append(job)
     

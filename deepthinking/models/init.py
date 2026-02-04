@@ -48,12 +48,28 @@ def _init_gru_cell(module: nn.GRUCell) -> None:
             hidden = module.hidden_size
             module.bias_hh[hidden:2 * hidden].fill_(1.0)
 
+def _init_lstm_cell(module: nn.LSTMCell) -> None:
+    with torch.no_grad():
+        nn.init.xavier_uniform_(module.weight_ih)
+        nn.init.orthogonal_(module.weight_hh)
+        if module.bias_ih is not None:
+            nn.init.zeros_(module.bias_ih)
+            hidden = module.hidden_size
+            # Set forget gate bias to 1.0: bias structure is [input, forget, cell, output]
+            module.bias_ih[hidden:2 * hidden].fill_(1.0)
+        if module.bias_hh is not None:
+            nn.init.zeros_(module.bias_hh)
+            hidden = module.hidden_size
+            # Set forget gate bias to 1.0: bias structure is [input, forget, cell, output]
+            module.bias_hh[hidden:2 * hidden].fill_(1.0)
 
 def apply_initialization(model: nn.Module, init_method: Optional[str]) -> None:
     """Initialize non-GRU layers. GRU init stays at default (module-created) values."""
     for name, module in model.named_modules():
         if isinstance(module, nn.GRUCell):
             _init_gru_cell(module)
+        if isinstance(module, nn.LSTMCell):
+            _init_lstm_cell(module)
 
     if init_method is None:
         return

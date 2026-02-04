@@ -471,4 +471,4 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
     lr_scheduler.step()
     warmup_scheduler.dampen()
 
-    return train_loss, acc, bit_acc, first_five_avg
+    return train_loss, acc, bit_acc, first_five_avg, None

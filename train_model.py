@@ -66,10 +66,10 @@ def main(cfg: DictConfig):
     pytorch_total_params = sum(p.numel() for p in net.parameters())
     
     # Initialize wandb with model info
-    run_name = getattr(cfg, "run_id", None) or None
+    run_id = getattr(cfg, "run_id", None)
     wandb.init(
         project='deep-thinking',
-        name=run_name,
+        name=run_id,
         config=OmegaConf.to_container(cfg, resolve=True)
     )
     if not getattr(cfg, "run_id", None):
@@ -151,6 +151,15 @@ def main(cfg: DictConfig):
         log.info(f"Val bitwise accuracy at epoch {epoch}: {val_bit_acc}")
         log.info(f"Average CE loss over first 5 iterations at epoch {epoch}: {first_five_ce_avg:.6f}")
         
+        # Log LSTM weight norm diagnostic
+        try:
+            model = net.module if isinstance(net, torch.nn.DataParallel) else net
+            lstm_weight_norm = model.recur_blocks[0].lstm.weight_hh.norm().item()
+            log.info(f"LSTM recurrent weight (weight_hh) L2 norm at epoch {epoch}: {lstm_weight_norm:.6f}")
+        except (AttributeError, IndexError) as e:
+            log.info(f"Error: {e}")
+            lstm_weight_norm = None
+        
         # Log gradient sensitivity per iteration
         if grad_sensitivity is not None:
             grad_sens_str = ", ".join([f"iter{i}: {v:.6f}" for i, v in enumerate(grad_sensitivity)])
@@ -172,6 +181,10 @@ def main(cfg: DictConfig):
             "train/val_bit_acc": val_bit_acc,
             "train/first_five_iter_ce_avg": first_five_ce_avg
         }
+        
+        # Add LSTM weight norm to wandb
+        if lstm_weight_norm is not None:
+            wandb_dict["diagnostics/lstm_weight_hh_norm"] = lstm_weight_norm
         
         # Add gradient sensitivity to wandb and create accumulating plot
         if grad_sensitivity is not None:

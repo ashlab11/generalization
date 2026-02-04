@@ -164,6 +164,10 @@ class AttentionBlock(nn.Module):
         self.num_sinks = num_sinks
         self.post_relu = nn.ReLU() if post_relu else nn.Identity()
         
+        # For LSTM: register buffer to store cell state (will be reset each forward pass)
+        if residual_method == 'lstm':
+            self.register_buffer('_lstm_cell_state', None)
+        
         assert not (lanes > 1 and residual_method != 'mhc'), "if there are multiple lanes, residual method must be mhc"
         assert not (lanes <= 1 and residual_method == 'mhc') and lanes < 6 and int(lanes) == lanes, "mhc must have integer lanes between 2-5"
         assert recall_inner or injection_type != 'concat', 'concat injection requires recall inside each subfunc'
@@ -242,12 +246,30 @@ class AttentionBlock(nn.Module):
         match self.residual_method:
             case 'add':
                 self.residual_func = lambda h, u: h + u
+            case 'relu':
+                self.residual_func = lambda h, u: F.relu(h + u)
             case 'gru':
                 self.gru = nn.GRUCell(self.hidden_dim, self.hidden_dim)
                 def residual_func(h, u):
                     B, L, D = h.shape
                     merged = self.gru(u.reshape(B * L, D), h.reshape(B * L, D))
                     return merged.reshape(B, L, D)
+                self.residual_func = residual_func
+            case 'lstm':
+                self.lstm = nn.LSTMCell(self.hidden_dim, self.hidden_dim)
+                def residual_func(h, u):
+                    B, L, D = h.shape
+                    h_flat = h.reshape(B * L, D)
+                    u_flat = u.reshape(B * L, D)
+                    # Initialize or use existing cell state
+                    if self._lstm_cell_state is None:
+                        c_flat = torch.zeros_like(h_flat)
+                    else:
+                        c_flat = self._lstm_cell_state 
+                    h_out, c_out = self.lstm(u_flat, (h_flat, c_flat))
+                    # Update stored cell state
+                    self._lstm_cell_state = c_out
+                    return h_out.reshape(B, L, D)
                 self.residual_func = residual_func
             case 'gate':
                 self.gate_h = nn.Linear(self.hidden_dim, self.hidden_dim)
@@ -262,6 +284,10 @@ class AttentionBlock(nn.Module):
                 pass
     
     def forward(self, x, h):
+        # Reset LSTM cell state at start of each forward pass
+        if self.residual_method == 'lstm':
+            self._lstm_cell_state = None
+            
         if self.lanes > 1:
             return self._forward_mhc(x, h)
 
