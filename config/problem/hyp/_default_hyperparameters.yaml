@@ -21,3 +21,4 @@ softmin_lambda: 0.1
 val_period: 10
 warmup_period: 10
 use_amp: true  # Use automatic mixed precision (bfloat16)
+seed: -1  # Random seed (-1 = no seed, any non-negative value sets seed)

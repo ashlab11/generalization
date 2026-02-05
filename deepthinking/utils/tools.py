@@ -87,7 +87,7 @@ def get_optimizer(optim_args, model_args, net, state_dict):
     warmup_period = optim_args.warmup_period
     weight_decay = getattr(optim_args, 'weight_decay', 2e-4)
     eps = getattr(optim_args, 'eps', 1e-8)  # Default AdamW eps
-            
+
     if optim_args.lr_throttle:
         # Reducing the lr here for the recurrent layers helps with stability,
         # To date (July 21, 2021), we may only need this for maze models.
@@ -227,7 +227,7 @@ def load_model_from_checkpoint(problem, model_args, device):
         else:
             in_channels = 3
 
-    extra_args = {k: v for k, v in dict(model_args).items()
+    extra_args = {k: v for k, v in dict(model_args).items() 
                   if k not in ['model', 'model_path', 'width', 'hidden_dim', 'max_iters',
                                'test_iterations', 'in_channels', 'init_method']}
     net = get_model(model, hidden_dim, in_channels=in_channels, max_iters=max_iters, **extra_args)

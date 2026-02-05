@@ -35,8 +35,8 @@ import deepthinking as dt
 
 @hydra.main(config_path="config", config_name="train_model_config")
 def main(cfg: DictConfig):
-    # Set seed if provided via environment variable
-    seed = int(os.environ.get("SEED", -1))
+    # Set seed if provided via config or environment variable
+    seed = getattr(cfg.problem.hyp, 'seed', int(os.environ.get("SEED", -1)))
     if seed >= 0:
         import random
         torch.manual_seed(seed)
