@@ -358,9 +358,6 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
     track_every_n = 10
     last_h_stats = None  # Keep track of last h_stats for debugging
     
-    # Track CE loss for first 5 iterations
-    first_five_iter_ce_losses = []
-
     for batch_idx, (inputs, targets) in enumerate(tqdm(trainloader, leave=False)):
         inputs, targets = inputs.to(device), targets.to(device).long()
         targets = targets.view(targets.size(0), -1)
@@ -373,13 +370,7 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
         autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
         
         with autocast_context:
-            # Get outputs for first 5 iterations for diagnostic
-            all_outputs = net(inputs, iters_to_do=max_iters, return_all=True)
-            outputs_max_iters = all_outputs[:, -1, :, :]  # Last iteration output
-            
-            # Compute average CE loss for first 5 iterations (for diagnostic)
-            first_five_iter_means = compute_first_n_iter_loss(all_outputs, targets, criterion, mask if problem == "mazes" else None, n=15)
-            first_five_iter_ce_losses.append(first_five_iter_means)
+            outputs_max_iters, _ = net(inputs, iters_to_do=max_iters)
 
             # NaN detection in outputs
             if torch.isnan(outputs_max_iters).any():
@@ -465,8 +456,8 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
     acc = 100.0 * correct / total
     bit_acc = 100.0 * bit_correct / bit_total if bit_total > 0 else 0.0
     
-    # Compute average CE loss over first 5 iterations
-    first_five_avg = torch.stack(first_five_iter_ce_losses).mean().item() if first_five_iter_ce_losses else 0.0
+    # Diagnostics for progressive are disabled to avoid return_all memory overhead.
+    first_five_avg = 0.0
 
     lr_scheduler.step()
     warmup_scheduler.dampen()
