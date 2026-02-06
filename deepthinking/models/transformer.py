@@ -20,16 +20,18 @@ from .ema_linear import EMA_Linear
 class DTTransformer(nn.Module):
     """DeepThinking Transformer model class"""
 
-    def __init__(self, hidden_dim, num_blocks=1, 
+    def __init__(self, hidden_dim, num_blocks=1,
                  injection_type='concat', norm_type='peri', norm_before_head=True,
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
-                 in_channels = 1, num_sinks=0, ema_act = False,
+                 in_channels = 1, out_channels = 2, num_sinks=0, ema_act = False,
                  noise_prob = 0.0, noise_scale = 0.01, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
         self.ema_act = ema_act
+        self.in_channels = int(in_channels)
+        self.out_channels = int(out_channels)
         
         #Core blocks
         self.recur_blocks = nn.ModuleList([AttentionBlock(
@@ -42,19 +44,19 @@ class DTTransformer(nn.Module):
                                            residual_method = residual_method,
                                            attn_type = attn_type,
                                            num_sinks=num_sinks,
-                                           post_relu=post_relu,
+                                           post_relu=post_relu
                                            ) 
                                            for _ in range(num_blocks)])
         self.head = nn.Sequential(
             nn.RMSNorm(hidden_dim) if norm_before_head else nn.Identity(),
             nn.Linear(hidden_dim, hidden_dim), 
             nn.GELU(), 
-            nn.Linear(hidden_dim, 2)
+            nn.Linear(hidden_dim, self.out_channels)
         )
 
         #Small parameters
         self.init_norm = nn.RMSNorm(hidden_dim)
-        self.in_channels = int(in_channels)
+        
         self.projection = nn.Linear(self.in_channels, hidden_dim)
         self.is_mhc = residual_method == 'mhc'
         self.lane_combine = nn.Parameter(torch.ones(lanes)) if self.is_mhc else None
@@ -84,33 +86,28 @@ class DTTransformer(nn.Module):
             self.reset = reset_ema_buffers
         
     def forward(self, x, iters_to_do, interim_thought=None, return_all = False, **kwargs):
-        spatial_shape = None
-        if x.dim() == 4:
-            # (B, C, H, W) -> (B, H*W, C)
-            spatial_shape = (x.size(2), x.size(3))
-            x = x.permute(0, 2, 3, 1).reshape(x.size(0), -1, x.size(1))
-        elif x.dim() == 3 and x.size(1) == self.in_channels:
-            # (B, C, L) -> (B, L, C)
-            x = x.transpose(1, 2)
+        # Normalize input to (B, *spatial_dims, C)
+        if x.dim() >= 2 and x.size(1) == self.in_channels:
+            # (B, C, *spatial_dims) -> (B, *spatial_dims, C)
+            x = x.permute(0, *range(2, x.dim()), 1)
         elif x.dim() == 2:
-            # (B, L) -> (B, 1, L) -> (B, L, 1) for 1D sequences without channel dimension
-            x = x.unsqueeze(1).transpose(1, 2)
+            # (B, L) -> (B, L, 1)
+            x = x.unsqueeze(-1)
 
         initial_thought = self.projection(x)
         #initial_thought = self.init_norm(initial_thought)
 
         if interim_thought is None:
             interim_thought = initial_thought
-        elif interim_thought.dim() == 3 and interim_thought.size(1) == self.hidden_dim:
-            interim_thought = interim_thought.transpose(1, 2)
+        elif interim_thought.dim() >= 3 and interim_thought.size(1) == self.hidden_dim:
+            interim_thought = interim_thought.permute(0, *range(2, interim_thought.dim()), 1)
         
-        if self.is_mhc and interim_thought.dim() == 3:
-            interim_thought = interim_thought.unsqueeze(0).repeat(self.lanes, 1, 1, 1)
-            
-        if spatial_shape is None:
-            all_outputs = torch.zeros((x.size(0), iters_to_do, 2, x.size(1))).to(x.device)
-        else:
-            all_outputs = torch.zeros((x.size(0), iters_to_do, 2, spatial_shape[0], spatial_shape[1])).to(x.device)
+        if self.is_mhc and interim_thought.dim() >= 3:
+            interim_thought = interim_thought.unsqueeze(0).repeat(self.lanes, *([1] * interim_thought.dim()))
+        
+        # Infer spatial dimensions from x: x is (B, *spatial_dims, C) after transformation
+        spatial_dims = x.shape[1:-1]  # All dims except batch and channel
+        all_outputs = torch.zeros((x.size(0), iters_to_do, self.out_channels, *spatial_dims)).to(x.device)
         track_norm_ratio = getattr(self, "_compute_h_norm_ratio", False)
         track_convergence = getattr(self, "_compute_convergence", False)
         
@@ -123,6 +120,7 @@ class DTTransformer(nn.Module):
         penult_interim = None
         prev_interim = None
         for i in range(iters_to_do):
+            #We deal with spatial problems on the inside. Model receives interim_thought and initial_thought as [B, ..., D]
             prev_interim = interim_thought
             
             #Add noise
@@ -147,10 +145,9 @@ class DTTransformer(nn.Module):
                 
             head_input = torch.einsum('k,kbld->bld', F.softmax(self.lane_combine, dim=0), interim_thought) if self.is_mhc else interim_thought
             out = self.head(head_input)
-            if spatial_shape is None:
-                all_outputs[:, i] = out.transpose(1, 2)
-            else:
-                all_outputs[:, i] = out.transpose(1, 2).reshape(x.size(0), 2, spatial_shape[0], spatial_shape[1])
+            # out is (B, *spatial_dims, out_channels), need (B, out_channels, *spatial_dims) for all_outputs
+            out = out.permute(0, -1, *range(1, out.dim() - 1))
+            all_outputs[:, i] = out
             if track_norm_ratio:
                 h_flat = (interim_thought.mean(dim=0) if self.is_mhc else interim_thought).detach().to(torch.float32).reshape(interim_thought.size(1) if self.is_mhc else interim_thought.size(0), -1)
                 h_norms.append(h_flat.norm(dim=-1).mean().item())
@@ -161,9 +158,7 @@ class DTTransformer(nn.Module):
             
         if self.training:
             if not return_all:
-                if spatial_shape is None:
-                    return out.transpose(1, 2), interim_thought
-                return out.transpose(1, 2).reshape(x.size(0), 2, spatial_shape[0], spatial_shape[1]), interim_thought
+                return out, interim_thought
             else:
                 return all_outputs
             

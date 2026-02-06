@@ -2,6 +2,8 @@ import math
 import wandb
 import pandas as pd
 
+#Will want to update this to include both table and plots, so you just need to run run.bash and analyze.py for any given experiment.
+
 #Gets data
 ENTITY  = "asherlabovich-brown-university"
 PROJECT = "deep-thinking"

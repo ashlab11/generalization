@@ -12,3 +12,5 @@ model:
   test_iterations:
     low: 30
     high: 50
+  in_channels: 10
+  out_channels: 10

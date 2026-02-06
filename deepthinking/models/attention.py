@@ -1,4 +1,5 @@
-from sympy import Q
+from sympy import Q, false
+import math
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
@@ -7,45 +8,99 @@ from math import factorial
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from torchtune.modules import RotaryPositionalEmbeddings
+from .ropend import RoPENd
+
 #Sliding window for local attention
 WINDOW_SIZE = 5
-def get_sliding_window(sinks):
+def get_sliding_window(sinks, spatial_dims):
+    """General sliding window for arbitrary spatial dimensions using Manhattan distance."""
+    
+    # Compute cumulative products for coordinate conversion (row-major flattening)
+    # cumprods[i] = product of spatial_dims[i+1:] 
+    # For (H, W): cumprods = [W, 1] so row = idx // W, col = idx % W
+    # For (D1, D2, D3): cumprods = [D2*D3, D3, 1]
+    cumprods_list = []
+    for i in range(len(spatial_dims)):
+        prod = math.prod(spatial_dims[i+1:]) if i < len(spatial_dims) - 1 else 1
+        cumprods_list.append(prod)
+    cumprods = torch.tensor(cumprods_list, dtype=torch.long)
+    spatial_dims_tensor = torch.tensor(spatial_dims, dtype=torch.long)
+    
+    def idx_to_coords(idx):
+        """Convert flattened index (after sinks) to multi-dimensional coordinates.
+        Returns tensor of shape (num_dims, ...) where first dim is coordinate dimension."""
+        true_idx = idx - sinks
+        # Expand for broadcasting: (num_dims, 1) and (1, ...)
+        cumprods_expanded = cumprods.view(-1, *([1] * idx.dim()))
+        spatial_dims_expanded = spatial_dims_tensor.view(-1, *([1] * idx.dim()))
+        true_idx_expanded = true_idx.unsqueeze(0)
+        
+        # Compute all coordinates at once: (num_dims, ...)
+        coords = (true_idx_expanded // cumprods_expanded) % spatial_dims_expanded
+        return coords
+    
+    def sliding_window(b, h, q_idx, kv_idx):
+        sink = kv_idx <= sinks - 1
+        
+        # Convert indices to coordinates: (num_dims, ...)
+        q_coords = idx_to_coords(q_idx)
+        kv_coords = idx_to_coords(kv_idx)
+        
+        # Compute Manhattan distance (L1 norm) across all dimensions
+        diff = torch.abs(q_coords.float() - kv_coords.float()).sum(dim=0)
+        
+        window_mask = diff <= WINDOW_SIZE
+        return sink | window_mask
+    
+    return sliding_window
+
+def get_sliding_window_1d(sinks):
+    """1D sliding window (kept for backward compatibility)."""
     def sliding_window(b, h, q_idx, kv_idx):
         sink = kv_idx <= sinks - 1
         window_mask = (q_idx - (kv_idx - sinks)).abs() <= WINDOW_SIZE
         return window_mask | sink
     return sliding_window
 
-#Sliding window for 2d
-def get_sliding_window_2d(sinks, width):
-    def get_width_height(x):
-        true_x = x - sinks
-        x_width = true_x % width
-        x_height = true_x // width
-        return x_width, x_height
-    def sliding_window(b, h, q_idx, kv_idx):
-        sink = kv_idx <= sinks - 1
-        q_w, q_h = get_width_height(q_idx)
-        k_w, k_h = get_width_height(kv_idx)
-        diff = torch.abs(q_w - k_w) + torch.abs(q_h - k_h)
-        return sink | diff <= WINDOW_SIZE
-    return sliding_window
-
 #Convolutional attention
 class ConvAttn(nn.Module):
     def __init__(self, input_dim, output_dim):
         super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.is_setup = False
         self.lin = nn.Linear(input_dim, output_dim)
         self.conv1 = nn.Conv1d(output_dim, output_dim, kernel_size=3,
                                stride=1, padding=1, bias=False)
         self.conv2 = nn.Conv1d(output_dim, output_dim, kernel_size=3,
                                stride=1, padding=1, bias=False)
+    
+    def setup(self, dimensions):
+        #Sets up on first try
+        match dimensions:
+            case 1:
+                conv_func = nn.Conv1d
+            case 2:
+                conv_func = nn.Conv2d
+            case 3: 
+                conv_func = nn.Conv3d
+        
+        self.conv1 = conv_func(self.output_dim, self.output_dim, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.conv2 = conv_func(self.output_dim, self.output_dim, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.is_setup = True
+        
     def forward(self, x):
-        #[B, L, (2)D]
-        x = F.relu(self.lin(x))
-        x = x.transpose(1, 2) #[B, D (C), L]
+        #Lazy initialization
+        if not self.is_setup:
+            self.setup(len(x.shape[1:-1]))
+
+        #[B, ..., 2D]
+        x = F.relu(self.lin(x)) #[B, ..., D]
+        x = x.permute(0, -1, *range(1, x.dim() - 1)) #[B, D, ...]
         x = self.conv2(F.relu(self.conv1(x)))
-        return x.transpose(1, 2) #[B, L, D]
+        return x.permute(0, *range(2, x.dim()), 1) #[B, ..., D]
     
 #Multi-headed attention with different attention methods
 class MHA(nn.Module):
@@ -65,7 +120,7 @@ class MHA(nn.Module):
         
         self.q_norm = nn.RMSNorm(self.head_dim) if qk_normalization else nn.Identity()
         self.k_norm = nn.RMSNorm(self.head_dim) if qk_normalization else nn.Identity()
-        self.rope = RotaryPositionalEmbeddings(dim=self.head_dim, max_seq_len=max_seq_len)
+        self.is_setup = False
         
         if self.num_sinks > 0:
             self.sink_k = nn.Parameter(torch.zeros(num_sinks, num_heads, self.head_dim))
@@ -77,22 +132,33 @@ class MHA(nn.Module):
             self.flex_attention_compiled = torch.compile(flex_attention)
         self._compute_attn_stats = False
         
+    def setup(self, x_shape):
+        self.rope = RoPENd((*x_shape, self.head_dim))
+        self.shape = x_shape
+        self.is_setup = True
+    
     def forward(self, x):
-        # x: (B, L, D)
-        B, L, _ = x.shape
-        qkv = self.qkv(x)  # (B, L, 3*D)
-        q, k, v = qkv.chunk(3, dim=-1)  # Each: (B, L, D)
+        # x: (B, ..., D), and self-attention requires (B, N, L, D)
+        if not self.is_setup or self.shape != x.shape[1:-1]:
+            self.setup(x.shape[1:-1])
+        spatial_dims = x.shape[1:-1]
+        L = math.prod(spatial_dims)
+        B = x.shape[0] 
+        qkv = self.qkv(x)  # (B, ..., 3*D)
+        q, k, v = qkv.chunk(3, dim=-1)  # Each: (B, ..., D)
         
-        # Reshape to (B, L, N, D)
-        q = q.reshape(B, L, self.num_heads, self.head_dim)
-        k = k.reshape(B, L, self.num_heads, self.head_dim)
-        v = v.reshape(B, L, self.num_heads, self.head_dim)
+        # Reshape to (B, ..., N, D) and then to (B, N, ..., D)
+        q = q.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(0, -2, *range(1, len(q.shape) - 2), -1)
+        k = k.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(0, -2, *range(1, len(q.shape) - 2), -1)
+        v = v.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(0, -2, *range(1, len(q.shape) - 2), -1)
         
-        q = self.rope(q).transpose(1, 2)
-        k = self.rope(k).transpose(1, 2)
-        v = v.transpose(1, 2)
+        q = self.rope(q) #(B, N, ..., D)
+        k = self.rope(k)
         
         q, k = self.q_norm(q), self.k_norm(k)
+        q = q.reshape(B, self.num_heads, L, self.head_dim)
+        k = k.reshape(B, self.num_heads, L, self.head_dim)
+        v = v.reshape(B, self.num_heads, L, self.head_dim)
         
         if self.num_sinks > 0:
             sink_k = self.sink_k.unsqueeze(0).expand(B, -1, -1, -1).transpose(1, 2).to(k.dtype)
@@ -103,7 +169,7 @@ class MHA(nn.Module):
         match self.attn_type:
             case 'local':
                 if L not in self._mask_cache:
-                    self._mask_cache[L] = create_block_mask(get_sliding_window(self.num_sinks), B=None, H=None, Q_LEN=L, KV_LEN=L+self.num_sinks, _compile=True)
+                    self._mask_cache[L] = create_block_mask(get_sliding_window(self.num_sinks, spatial_dims), B=None, H=None, Q_LEN=L, KV_LEN=L+self.num_sinks, _compile=True)
                 out = self.flex_attention_compiled(q, k, v, block_mask=self._mask_cache[L])
             case 'full':
                 use_flash = q.is_cuda and q.dtype in (torch.float16, torch.bfloat16)
@@ -117,11 +183,11 @@ class MHA(nn.Module):
                 denom = torch.einsum('bhld,bhd->bhl', q_kernel, k_kernel.sum(dim=-2)).unsqueeze(-1) + 1e-8
                 out = num / denom
             
-        if self._compute_attn_stats and self.attn_type != 'linear':
+        if self._compute_attn_stats and self.attn_type != 'linear' and len(self.x_shape) == 1: #Only compute for 1D attention, others are too hard
             self._compute_attention_stats(q, k, L)
             
-        # Reshape back: (B, num_heads, L, head_dim) -> (B, L, num_heads, head_dim) -> (B, L, D)
-        out = out.transpose(1, 2).reshape(B, L, self.output_dim)
+        # Reshape back: (B, num_heads, L, head_dim) -> (B, L, num_heads, head_dim) -> (B, *spatial_dims, D)
+        out = out.transpose(1, 2).reshape(B, *spatial_dims, self.output_dim)
         out = self.out_proj(out)
         return out 
 
@@ -251,25 +317,24 @@ class AttentionBlock(nn.Module):
             case 'gru':
                 self.gru = nn.GRUCell(self.hidden_dim, self.hidden_dim)
                 def residual_func(h, u):
-                    B, L, D = h.shape
-                    merged = self.gru(u.reshape(B * L, D), h.reshape(B * L, D))
-                    return merged.reshape(B, L, D)
+                    h_flat = h.reshape(-1, h.shape[-1])
+                    u_flat = u.reshape(-1, u.shape[-1])
+                    merged = self.gru(u_flat, h_flat)
+                    return merged.reshape(h.shape)
                 self.residual_func = residual_func
             case 'lstm':
                 self.lstm = nn.LSTMCell(self.hidden_dim, self.hidden_dim)
                 def residual_func(h, u):
-                    B, L, D = h.shape
-                    h_flat = h.reshape(B * L, D)
-                    u_flat = u.reshape(B * L, D)
-                    # Initialize or use existing cell state
+                    #[B, ..., D]
+                    h_flat = h.reshape(-1, h.shape[-1])
+                    u_flat = u.reshape(-1, u.shape[-1])
                     if self._lstm_cell_state is None:
                         c_flat = torch.zeros_like(h_flat)
                     else:
-                        c_flat = self._lstm_cell_state 
+                        c_flat = self._lstm_cell_state
                     h_out, c_out = self.lstm(u_flat, (h_flat, c_flat))
-                    # Update stored cell state
                     self._lstm_cell_state = c_out
-                    return h_out.reshape(B, L, D)
+                    return h_out.reshape(h.shape)
                 self.residual_func = residual_func
             case 'gate':
                 self.gate_h = nn.Linear(self.hidden_dim, self.hidden_dim)
@@ -284,6 +349,8 @@ class AttentionBlock(nn.Module):
                 pass
     
     def forward(self, x, h):
+        #x, h = [B, ..., C] depending on problem, but we don't need to deal with it in full block, just the individual mechanisms
+        
         # Reset LSTM cell state at start of each forward pass
         if self.residual_method == 'lstm':
             self._lstm_cell_state = None
@@ -314,7 +381,7 @@ class AttentionBlock(nn.Module):
             shortcut = x_in
             input = self.pre_norm_func(einsum('k,k...->...', self.in_scalars, x_in))
             input = self.injection_func(input, h)
-            layer_output = block(input).unsqueeze(0).repeat(self.lanes, 1, 1, 1)
+            layer_output = block(input).unsqueeze(0).repeat(self.lanes, *([1] * input.dim()))
             layer_output = self.peri_norm_func(layer_output)
             layer_output = einsum('k,k...->k...', self.out_scalars, layer_output)
             shortcut_mixing = einsum('kl,l...->k...', mixing_M, shortcut)
