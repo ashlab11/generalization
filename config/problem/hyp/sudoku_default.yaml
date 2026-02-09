@@ -1,5 +1,2 @@
 defaults:
-  - hyp: _default_hyperparameters
-
-clip: 1
-rand_method: basic  # 'basic', 'geiping', or int for min detach steps
+  - _default_hyperparameters

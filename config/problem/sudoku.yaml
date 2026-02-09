@@ -1,16 +1,14 @@
 defaults:
   - hyp: sudoku_default
-  - model: cnn
+  - model: transformer
 
 name: sudoku
-test_data: 33
-train_data: 9
+train_data: expert
+test_data: extreme
+
+max_train_samples: 100000
+max_test_samples: 10000
 
 model:
-  width: 100
-  max_iters: 30
-  test_iterations:
-    low: 30
-    high: 50
   in_channels: 10
   out_channels: 10

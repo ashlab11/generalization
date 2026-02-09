@@ -25,6 +25,7 @@ from .prefix_sums_data import prepare_prefix_loader
 from .cellular_data import prepare_cellular_loader
 from .chess_data import prepare_lichess_puzzle_loader
 from .arc_data import prepare_arc_loader
+from .sudoku_data import prepare_sudoku_loader
 from .warmup import ExponentialWarmup, LinearWarmup
 
 # Ignore statements for pylint:
@@ -57,11 +58,21 @@ def get_dataloaders(problem_args):
         return prepare_lichess_puzzle_loader(train_batch_size=problem_args.hyp.train_batch_size,
                                     test_batch_size=problem_args.hyp.test_batch_size,
                                     train_data=problem_args.train_data,
-                                    test_data=problem_args.test_data)
+                                    test_data=problem_args.test_data,
+                                    max_train_samples=getattr(problem_args, "max_train_samples", None),
+                                    max_test_samples=getattr(problem_args, "max_test_samples", None))
     elif problem_args.name == "arc":
         extra = {k: v for k, v in dict(problem_args).items()
                  if k not in ["name", "hyp", "train_data", "test_data"]}
         return prepare_arc_loader(train_batch_size=problem_args.hyp.train_batch_size,
+                                  test_batch_size=problem_args.hyp.test_batch_size,
+                                  train_data=problem_args.train_data,
+                                  test_data=problem_args.test_data,
+                                  **extra)
+    elif problem_args.name == 'sudoku':
+        extra = {k: v for k, v in dict(problem_args).items()
+                 if k not in ["name", "hyp", "train_data", "test_data"]}
+        return prepare_sudoku_loader(train_batch_size=problem_args.hyp.train_batch_size,
                                   test_batch_size=problem_args.hyp.test_batch_size,
                                   train_data=problem_args.train_data,
                                   test_data=problem_args.test_data,
@@ -234,7 +245,7 @@ def load_model_from_checkpoint(problem, model_args, device):
     if model_path is None:
         apply_initialization(net, getattr(model_args, "init_method", "default"))
     net = net.to(device)
-    if device == "cuda":
+    if device == "cuda" and torch.cuda.device_count() > 1:
         net = torch.nn.DataParallel(net)
     if model_path is not None:
         logging.info(f"Loading model from checkpoint {model_path}...")

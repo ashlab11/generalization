@@ -75,7 +75,7 @@ class ConvAttn(nn.Module):
         self.conv2 = nn.Conv1d(output_dim, output_dim, kernel_size=3,
                                stride=1, padding=1, bias=False)
     
-    def setup(self, dimensions):
+    def setup(self, dimensions, device=None):
         #Sets up on first try
         match dimensions:
             case 1:
@@ -89,12 +89,15 @@ class ConvAttn(nn.Module):
                                stride=1, padding=1, bias=False)
         self.conv2 = conv_func(self.output_dim, self.output_dim, kernel_size=3,
                                stride=1, padding=1, bias=False)
+        if device is not None:
+            self.conv1 = self.conv1.to(device)
+            self.conv2 = self.conv2.to(device)
         self.is_setup = True
         
     def forward(self, x):
         #Lazy initialization
         if not self.is_setup:
-            self.setup(len(x.shape[1:-1]))
+            self.setup(len(x.shape[1:-1]), device=x.device)
 
         #[B, ..., 2D]
         x = F.relu(self.lin(x)) #[B, ..., D]
@@ -147,10 +150,12 @@ class MHA(nn.Module):
         qkv = self.qkv(x)  # (B, ..., 3*D)
         q, k, v = qkv.chunk(3, dim=-1)  # Each: (B, ..., D)
         
-        # Reshape to (B, ..., N, D) and then to (B, N, ..., D)
-        q = q.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(0, -2, *range(1, len(q.shape) - 2), -1)
-        k = k.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(0, -2, *range(1, len(q.shape) - 2), -1)
-        v = v.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(0, -2, *range(1, len(q.shape) - 2), -1)
+        # Reshape to (B, ..., N, D) and then permute to (B, N, ..., D).
+        # Build axes from spatial rank to avoid using stale q-shape during assignment.
+        permute_dims = (0, -2, *range(1, len(spatial_dims) + 1), -1)
+        q = q.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(*permute_dims)
+        k = k.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(*permute_dims)
+        v = v.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(*permute_dims)
         
         q = self.rope(q) #(B, N, ..., D)
         k = self.rope(k)
@@ -168,9 +173,11 @@ class MHA(nn.Module):
         
         match self.attn_type:
             case 'local':
-                if L not in self._mask_cache:
-                    self._mask_cache[L] = create_block_mask(get_sliding_window(self.num_sinks, spatial_dims), B=None, H=None, Q_LEN=L, KV_LEN=L+self.num_sinks, _compile=True)
-                out = self.flex_attention_compiled(q, k, v, block_mask=self._mask_cache[L])
+                # Cache by full spatial signature -- probably unnecessary, but who knows about the future
+                mask_key = (tuple(spatial_dims), int(self.num_sinks))
+                if mask_key not in self._mask_cache:
+                    self._mask_cache[mask_key] = create_block_mask(get_sliding_window(self.num_sinks, spatial_dims), B=None, H=None, Q_LEN=L, KV_LEN=L + self.num_sinks, _compile=True)
+                out = self.flex_attention_compiled(q, k, v, block_mask=self._mask_cache[mask_key])
             case 'full':
                 use_flash = q.is_cuda and q.dtype in (torch.float16, torch.bfloat16)
                 backend = SDPBackend.FLASH_ATTENTION if use_flash else SDPBackend.MATH
@@ -183,7 +190,7 @@ class MHA(nn.Module):
                 denom = torch.einsum('bhld,bhd->bhl', q_kernel, k_kernel.sum(dim=-2)).unsqueeze(-1) + 1e-8
                 out = num / denom
             
-        if self._compute_attn_stats and self.attn_type != 'linear' and len(self.x_shape) == 1: #Only compute for 1D attention, others are too hard
+        if self._compute_attn_stats and self.attn_type != 'linear' and len(self.shape) == 1: #Only compute for 1D attention, others are too hard
             self._compute_attention_stats(q, k, L)
             
         # Reshape back: (B, num_heads, L, head_dim) -> (B, L, num_heads, head_dim) -> (B, *spatial_dims, D)

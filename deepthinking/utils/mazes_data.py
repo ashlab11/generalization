@@ -9,6 +9,7 @@
     October 2021
 """
 
+import os
 import torch
 from torch.utils import data
 from easy_to_hard_data import MazeDataset
@@ -33,21 +34,11 @@ def prepare_maze_loader(train_batch_size, test_batch_size, train_data, test_data
                                                       int(len(train_data) - train_split)],
                                                      generator=torch.Generator().manual_seed(42))
 
-    trainloader = data.DataLoader(trainset,
-                                  num_workers=0,
-                                  batch_size=train_batch_size,
-                                  shuffle=shuffle,
-                                  drop_last=True)
-    valloader = data.DataLoader(valset,
-                                num_workers=0,
-                                batch_size=test_batch_size,
-                                shuffle=False,
-                                drop_last=False)
-    testloader = data.DataLoader(testset,
-                                 num_workers=0,
-                                 batch_size=test_batch_size,
-                                 shuffle=False,
-                                 drop_last=False)
+    num_workers = min(16, max(1, os.cpu_count() or 1))
+    loader_settings = {"num_workers": num_workers, "pin_memory": torch.cuda.is_available(), "persistent_workers": num_workers > 0}
+    trainloader = data.DataLoader(trainset, batch_size=train_batch_size, shuffle=shuffle, drop_last=True, **loader_settings)
+    valloader = data.DataLoader(valset, batch_size=test_batch_size, shuffle=False, drop_last=False, **loader_settings)
+    testloader = data.DataLoader(testset, batch_size=test_batch_size, shuffle=False, drop_last=False, **loader_settings)
 
     loaders = {"train": trainloader, "test": testloader, "val": valloader}
 

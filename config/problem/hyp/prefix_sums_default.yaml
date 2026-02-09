@@ -1,24 +1,2 @@
-alpha: 1
-clip: 1
-epochs: 150
-lr: 0.001
-lr_decay: step
-lr_factor: 0.1
-lr_schedule:
-  - 60
-  - 100
-lr_throttle: False
-optimizer: adamw
-weight_decay: 0.0002
-save_period: -1
-eps: 1e-8
-test_batch_size: 500
-test_mode: default
-train_batch_size: 100
-train_mode: progressive
-softmin_beta: 1.0
-softmin_lambda: 0.1
-val_period: 10
-warmup_period: 10
-rand_method: basic  # 'basic', 'geiping', or int for min detach steps
-use_amp: true  # Use automatic mixed precision (bfloat16)
+defaults:
+  - _default_hyperparameters

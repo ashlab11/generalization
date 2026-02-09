@@ -22,6 +22,7 @@ import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
+from torch.profiler import profile, ProfilerActivity
 
 import deepthinking as dt
 
@@ -55,6 +56,9 @@ def main(cfg: DictConfig):
     cfg.problem.model.test_iterations = list(range(cfg.problem.model.test_iterations["low"],
                                                    cfg.problem.model.test_iterations["high"] + 1))
     assert 0 <= cfg.problem.hyp.alpha <= 1, "Weighting for loss (alpha) not in [0, 1], exiting."
+    profile_mode = bool(getattr(cfg, "profile", False))
+    if profile_mode:
+        log.info("Profile mode enabled: will run one epoch and log top 10 CPU/CUDA ops.")
 
     ####################################################
     #               Dataset and Network and Optimizer
@@ -113,19 +117,36 @@ def main(cfg: DictConfig):
 
     ####################################################
     #        Train
-    log.info(f"==> Starting training for {max(cfg.problem.hyp.epochs - start_epoch, 0)} epochs...")
+    final_epoch_exclusive = min(cfg.problem.hyp.epochs, start_epoch + 1) if profile_mode else cfg.problem.hyp.epochs
+    log.info(f"==> Starting training for {max(final_epoch_exclusive - start_epoch, 0)} epochs...")
     highest_val_acc_so_far = -1
     best_so_far = False
 
     prev_state = None  # Keep previous epoch state for debugging
     grad_fraction_history = []  # Store gradient fractions per epoch for plotting
-    for epoch in range(start_epoch, cfg.problem.hyp.epochs):
+    for epoch in range(start_epoch, final_epoch_exclusive):
         # Save state before training (so we can replay if NaN happens)
         prev_state = {"net": net.state_dict(), "epoch": epoch, "optimizer": optimizer.state_dict()}
         
         try:
             start = time.time()
-            loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = dt.train(net, loaders, cfg.problem.hyp.train_mode, train_setup, device, epoch)
+            if profile_mode:
+                activities = [ProfilerActivity.CPU]
+                if device == "cuda":
+                    activities.append(ProfilerActivity.CUDA)
+                with profile(activities=activities, record_shapes=False, profile_memory=False, with_stack=False) as prof:
+                    loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = dt.train(
+                        net, loaders, cfg.problem.hyp.train_mode, train_setup, device, epoch
+                    )
+                log.info("Top 10 ops by self CPU time:")
+                log.info("\n" + prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
+                if device == "cuda":
+                    log.info("Top 10 ops by self CUDA time:")
+                    log.info("\n" + prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10))
+            else:
+                loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = dt.train(
+                    net, loaders, cfg.problem.hyp.train_mode, train_setup, device, epoch
+                )
             train_time = time.time() - start
         except ValueError as e:
             # NaN detected! Save the pre-crash checkpoint
@@ -292,7 +313,7 @@ def main(cfg: DictConfig):
             raise ValueError(f"Loss is nan, exiting...")
 
         # evaluate the model periodically and at the final epoch
-        if (epoch + 1) % cfg.problem.hyp.val_period == 0 or epoch + 1 == cfg.problem.hyp.epochs:
+        if (epoch + 1) % cfg.problem.hyp.val_period == 0 or epoch + 1 == final_epoch_exclusive:
             start = time.time()
             test_result = dt.test(net,
                                   [loaders["test"],
@@ -355,7 +376,7 @@ def main(cfg: DictConfig):
             
         # check to see if we should save
         save_now = (epoch + 1) % cfg.problem.hyp.save_period == 0 or \
-                   (epoch + 1) == cfg.problem.hyp.epochs or best_so_far
+                   (epoch + 1) == final_epoch_exclusive or best_so_far
         if save_now:
             state = {"net": net.state_dict(), "epoch": epoch, "optimizer": optimizer.state_dict()}
             out_str = f"model_{'best' if best_so_far else ''}.pth"

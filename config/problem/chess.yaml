@@ -1,12 +1,14 @@
 defaults:
   - hyp: chess_default
-  - model: dt_net_recall_2d
+  - model: transformer
 
 name: chess
-test_data: 700_000
-train_data: 600_000
+train_data: 1600
+test_data: 2000
+
+max_train_samples: 10000
+max_test_samples: 10000
 
 model:
-  width: 512
   in_channels: 12
   out_channels: 2

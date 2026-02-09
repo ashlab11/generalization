@@ -11,7 +11,8 @@ OUT_DIR = "experiments/residual_path"
 
 api = wandb.Api()
 runs = api.runs(f"{ENTITY}/{PROJECT}", filters = {'state': 'finished', 
-                                                  'config.sweep_name': 'residual_path_ablation'})
+                                                  'config.sweep_name': 'residual_path_ablation',
+                                                  'config.problem.hyp.seed': {'$exists': True}})
 
 results = []
 
@@ -31,13 +32,15 @@ for run in runs:
     lr = config['hyp']['lr']
     norm_type = config['model']['norm_type']
     residual_method = config['model']['residual_method']
+    seed = config['hyp']['seed']
     results.append({
         'residual_method': residual_method, 
         'norm_type': norm_type, 
         'lr': lr, 
         'best_hard_acc': max_hard, 
         'top_h_ratio': max_ratio,
-        'percent_100': percent_100
+        'percent_100': percent_100, 
+        'seed': seed
     })
 
 results_df = pd.DataFrame(results)

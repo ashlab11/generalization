@@ -145,16 +145,16 @@ def get_predicted(inputs, outputs, problem):
 def test_default(net, testloader, iters, problem, device, use_amp=False, diag_state=None, return_bitwise=False):
     max_iters = max(iters)
     net.eval()
-    corrects = torch.zeros(max_iters)
-    bit_corrects = torch.zeros(max_iters)
+    corrects = torch.zeros(max_iters, device=device)
+    bit_corrects = torch.zeros(max_iters, device=device)
     total = 0
-    bit_total = 0
+    bit_total = torch.zeros((), device=device)
 
     autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.cuda.amp.autocast(enabled=False)
 
     with torch.no_grad():
         for inputs, targets in tqdm(testloader, leave=False):
-            inputs, targets = inputs.to(device), targets.to(device)
+            inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             targets = targets.view(targets.size(0), -1)
             if return_bitwise and problem == "mazes":
                 mask = inputs.view(inputs.size(0), inputs.size(1), -1).max(dim=1)[0] > 0
@@ -169,23 +169,23 @@ def test_default(net, testloader, iters, problem, device, use_amp=False, diag_st
                     mask = targets != -100
                     eq = predicted == targets
                     eq = eq | (~mask)
-                    corrects[i] += torch.amin(eq, dim=[1]).sum().item()
+                    corrects[i] += torch.amin(eq, dim=[1]).sum()
                     if return_bitwise:
-                        bit_corrects[i] += eq[mask].sum().item()
+                        bit_corrects[i] += eq[mask].sum()
                 else:
-                    corrects[i] += torch.amin(predicted == targets, dim=[1]).sum().item()
+                    corrects[i] += torch.amin(predicted == targets, dim=[1]).sum()
                     if return_bitwise:
                         if problem == "mazes":
-                            bit_corrects[i] += (predicted == targets)[mask].sum().item()
+                            bit_corrects[i] += (predicted == targets)[mask].sum()
                         else:
-                            bit_corrects[i] += (predicted == targets).sum().item()
+                            bit_corrects[i] += (predicted == targets).sum()
 
             total += targets.size(0)
             if return_bitwise:
                 if problem == "mazes":
-                    bit_total += mask.sum().item()
+                    bit_total += mask.sum()
                 elif problem in {"rule110", "cellular"}:
-                    bit_total += (targets != -100).sum().item()
+                    bit_total += (targets != -100).sum()
                 else:
                     bit_total += targets.numel()
             if diag_state is not None and diag_state["enabled"]:
@@ -193,9 +193,10 @@ def test_default(net, testloader, iters, problem, device, use_amp=False, diag_st
                 if diag_state["remaining_batches"] <= 0:
                     _disable_diag(net, diag_state)
 
-    accuracy = 100.0 * corrects / total
+    accuracy = (100.0 * corrects / total).cpu()
     if return_bitwise:
-        bit_accuracy = 100.0 * bit_corrects / bit_total if bit_total > 0 else bit_corrects
+        bit_total_value = bit_total.item()
+        bit_accuracy = (100.0 * bit_corrects / bit_total).cpu() if bit_total_value > 0 else bit_corrects.cpu()
     ret_acc = {}
     ret_bit_acc = {}
     for ite in iters:
@@ -213,14 +214,14 @@ def test_max_conf(net, testloader, iters, problem, device, use_amp=False, diag_s
     corrects = torch.zeros(max_iters).to(device)
     bit_corrects = torch.zeros(max_iters).to(device)
     total = 0
-    bit_total = 0
+    bit_total = torch.zeros((), device=device)
     softmax = torch.nn.functional.softmax
 
     autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.cuda.amp.autocast(enabled=False)
 
     with torch.no_grad():
         for inputs, targets in tqdm(testloader, leave=False):
-            inputs, targets = inputs.to(device), targets.to(device)
+            inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             targets = targets.view(targets.size(0), -1)
             total += targets.size(0)
             if return_bitwise and problem == "mazes":
@@ -268,15 +269,16 @@ def test_max_conf(net, testloader, iters, problem, device, use_amp=False, diag_s
                     _disable_diag(net, diag_state)
             if return_bitwise:
                 if problem == "mazes":
-                    bit_total += mask.sum().item()
+                    bit_total += mask.sum()
                 elif problem in {"rule110", "cellular"}:
-                    bit_total += (targets != -100).sum().item()
+                    bit_total += (targets != -100).sum()
                 else:
                     bit_total += targets.numel()
 
     accuracy = 100 * corrects.long().cpu() / total
     if return_bitwise:
-        bit_accuracy = 100.0 * bit_corrects.float().cpu() / bit_total if bit_total > 0 else bit_corrects.float().cpu()
+        bit_total_value = bit_total.item()
+        bit_accuracy = 100.0 * bit_corrects.float().cpu() / bit_total_value if bit_total_value > 0 else bit_corrects.float().cpu()
     ret_acc = {}
     ret_bit_acc = {}
     for ite in iters:

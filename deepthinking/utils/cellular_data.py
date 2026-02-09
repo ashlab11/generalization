@@ -2,6 +2,8 @@
     1D cellular automaton dataloaders (Wolfram rules).
 """
 
+import os
+
 import torch
 from torch.utils import data
 
@@ -20,6 +22,11 @@ def _rule_step(state, rule_num):
     pattern = (left << 2) | (center << 1) | right
     rule = torch.tensor(int(rule_num), device=state.device, dtype=torch.int64)
     return torch.bitwise_and(torch.bitwise_right_shift(rule, pattern), 1).to(state.dtype)
+
+
+def _loader_settings():
+    num_workers = min(16, max(1, os.cpu_count() or 1))
+    return {"num_workers": num_workers, "pin_memory": torch.cuda.is_available(), "persistent_workers": num_workers > 0}
 
 
 def _evolve_rule(state, steps, max_steps, rule_num):
@@ -58,21 +65,20 @@ class CellularDataset(data.Dataset):
 
 
 def prepare_cellular_loader(train_batch_size, test_batch_size, train_data, test_data,
-                            train_split=0.8, shuffle=True, train_samples=10000, test_samples=10000,
-                            state_bits=24, test_t_min=None, exclude_t=None, rule_num=110):
+                            train_split=0.8, shuffle=True, max_train_samples=10000, max_test_samples=10000,
+                            state_bits=24, exclude_t=None, rule_num=110):
     train_t_min = 0
     train_t_max = int(train_data)
-    if test_t_min is None:
-        test_t_min = train_t_max + 1
+    test_t_min = train_t_max + 1
     test_t_max = int(test_data)
 
-    trainset_full = CellularDataset(num_samples=train_samples,
+    trainset_full = CellularDataset(num_samples=max_train_samples,
                                     t_min=train_t_min,
                                     t_max=train_t_max,
                                     state_bits=state_bits,
                                     rule_num=rule_num,
                                     seed=42)
-    testset = CellularDataset(num_samples=test_samples,
+    testset = CellularDataset(num_samples=max_test_samples,
                               t_min=int(test_t_min),
                               t_max=test_t_max,
                               state_bits=state_bits,
@@ -80,6 +86,7 @@ def prepare_cellular_loader(train_batch_size, test_batch_size, train_data, test_
                               seed=123)
 
     if exclude_t:
+        #Useful for showing biggest problem with cellular, models only memorize
         exclude = torch.as_tensor(exclude_t, device=trainset_full.t_values.device)
         keep = ~torch.isin(trainset_full.t_values, exclude)
         keep_idx = keep.nonzero(as_tuple=False).view(-1).tolist()
@@ -91,12 +98,10 @@ def prepare_cellular_loader(train_batch_size, test_batch_size, train_data, test_
         generator=torch.Generator().manual_seed(42),
     )
 
-    trainloader = data.DataLoader(trainset, num_workers=0, batch_size=train_batch_size,
-                                  shuffle=shuffle, drop_last=True)
-    testloader = data.DataLoader(testset, num_workers=0, batch_size=test_batch_size,
-                                 shuffle=False, drop_last=False)
-    valloader = data.DataLoader(valset, num_workers=0, batch_size=test_batch_size,
-                                shuffle=False, drop_last=False)
+    loader_settings = _loader_settings()
+    trainloader = data.DataLoader(trainset, batch_size=train_batch_size, shuffle=shuffle, drop_last=True, **loader_settings)
+    testloader = data.DataLoader(testset, batch_size=test_batch_size, shuffle=False, drop_last=False, **loader_settings)
+    valloader = data.DataLoader(valset, batch_size=test_batch_size, shuffle=False, drop_last=False, **loader_settings)
     loaders = {"train": trainloader, "test": testloader, "val": valloader}
 
     return loaders

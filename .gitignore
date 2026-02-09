@@ -31,6 +31,7 @@ output_default
 .vscode/
 stuff_to_do.md
 *.out
+AGENTS.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

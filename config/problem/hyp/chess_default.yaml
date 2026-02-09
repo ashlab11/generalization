@@ -1,13 +1,2 @@
 defaults:
-  - hyp: _default_hyperparameters
-
-alpha: 0.5
-epochs: 130
-lr: 0.01
-lr_schedule:
-  - 100
-  - 115
-optimizer: sgd
-test_batch_size: 300
-train_batch_size: 300
-val_period: 20
+  - _default_hyperparameters

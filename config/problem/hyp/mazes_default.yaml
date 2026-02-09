@@ -1,10 +1,2 @@
 defaults:
   - hyp: _default_hyperparameters
-
-clip: 1
-lr_schedule:
-  - 100
-lr_throttle: True
-test_batch_size: 25
-train_batch_size: 50
-rand_method: basic  # 'basic', 'geiping', or int for min detach steps

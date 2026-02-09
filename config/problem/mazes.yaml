@@ -1,13 +1,11 @@
 defaults:
   - hyp: mazes_default
-  - model: cnn
+  - model: transformer
 
 name: mazes
 test_data: 33
 train_data: 9
 
 model:
-  width: 128
-  max_seq_len: 1089
   in_channels: 1
   out_channels: 2

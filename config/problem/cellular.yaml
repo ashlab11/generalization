@@ -1,13 +1,15 @@
 defaults:
   - hyp: prefix_sums_default
-  - model: dt_net_recall_1d
+  - model: transformer
 
 name: cellular
 train_data: 31
 test_data: 63
+
 state_bits: 24
 rule_num: 110
-test_t_min: 32
+max_train_samples: 10000
+max_test_samples: 10000
 
 model:
   in_channels: 1

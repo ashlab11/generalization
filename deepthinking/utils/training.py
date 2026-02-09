@@ -201,11 +201,11 @@ def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=Non
     if beta <= 0:
         raise ValueError(f"softmin_beta must be > 0, got {beta}")
     
-    train_loss = 0
-    correct = 0
+    train_loss = torch.zeros((), device=device)
+    correct = torch.zeros((), device=device)
     total = 0
-    bit_correct = 0
-    bit_total = 0
+    bit_correct = torch.zeros((), device=device)
+    bit_total = torch.zeros((), device=device)
     track_every_n = 10
     last_h_stats = None  # Keep track of last h_stats for debugging
     
@@ -215,10 +215,10 @@ def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=Non
     loss_grad_sensitivity = []
     
     for batch_idx, (inputs, targets) in enumerate(tqdm(trainloader, leave=False)):
-        inputs, targets = inputs.to(device), targets.to(device).long()
+        inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True).long()
         targets = targets.view(targets.size(0), -1)
         
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         # Conditionally apply autocast based on use_amp flag
         autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
@@ -298,28 +298,29 @@ def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=Non
         else:
             optimizer.step()
 
-        train_loss += loss.item()
+        train_loss += loss.detach()
         predicted = get_predicted(inputs, outputs_max_iters, problem)
         if problem in {"rule110", "cellular"}:
             mask = targets != -100
             eq = predicted == targets
             eq = eq | (~mask)
-            correct += torch.amin(eq, dim=[-1]).sum().item()
-            bit_correct += eq[mask].sum().item()
-            bit_total += mask.sum().item()
+            correct += torch.amin(eq, dim=[-1]).sum()
+            bit_correct += eq[mask].sum()
+            bit_total += mask.sum()
         else:
-            correct += torch.amin(predicted == targets, dim=[-1]).sum().item()
+            correct += torch.amin(predicted == targets, dim=[-1]).sum()
         total += targets.size(0)
         if problem == "mazes":
-            bit_correct += (predicted == targets)[mask].sum().item()
-            bit_total += mask.sum().item()
+            bit_correct += (predicted == targets)[mask].sum()
+            bit_total += mask.sum()
         elif problem not in {"rule110", "cellular"}:
-            bit_correct += (predicted == targets).sum().item()
+            bit_correct += (predicted == targets).sum()
             bit_total += targets.numel()
 
-    train_loss = train_loss / (batch_idx + 1)
-    acc = 100.0 * correct / total
-    bit_acc = 100.0 * bit_correct / bit_total if bit_total > 0 else 0.0
+    train_loss = (train_loss / (batch_idx + 1)).item()
+    acc = (100.0 * correct / total).item()
+    bit_total_value = bit_total.item()
+    bit_acc = (100.0 * bit_correct / bit_total).item() if bit_total_value > 0 else 0.0
     
     # Compute average CE loss over first 5 iterations
     first_five_avg = torch.stack(first_five_iter_ce_losses).mean().item() if first_five_iter_ce_losses else 0.0
@@ -350,21 +351,21 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
     scaler = train_setup.scaler
     criterion = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
 
-    train_loss = 0
-    correct = 0
+    train_loss = torch.zeros((), device=device)
+    correct = torch.zeros((), device=device)
     total = 0
-    bit_correct = 0
-    bit_total = 0
+    bit_correct = torch.zeros((), device=device)
+    bit_total = torch.zeros((), device=device)
     track_every_n = 10
     last_h_stats = None  # Keep track of last h_stats for debugging
     
     for batch_idx, (inputs, targets) in enumerate(tqdm(trainloader, leave=False)):
-        inputs, targets = inputs.to(device), targets.to(device).long()
+        inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True).long()
         targets = targets.view(targets.size(0), -1)
         if problem == "mazes":
             mask = inputs.view(inputs.size(0), inputs.size(1), -1).max(dim=1)[0] > 0
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         # Conditionally apply autocast based on use_amp flag
         autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
@@ -433,28 +434,29 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
         else:
             optimizer.step()
 
-        train_loss += loss.item()
+        train_loss += loss.detach()
         predicted = get_predicted(inputs, outputs_max_iters, problem)
         if problem in {"rule110", "cellular"}:
             mask = targets != -100
             eq = predicted == targets
             eq = eq | (~mask)
-            correct += torch.amin(eq, dim=[-1]).sum().item()
-            bit_correct += eq[mask].sum().item()
-            bit_total += mask.sum().item()
+            correct += torch.amin(eq, dim=[-1]).sum()
+            bit_correct += eq[mask].sum()
+            bit_total += mask.sum()
         else:
-            correct += torch.amin(predicted == targets, dim=[-1]).sum().item()
+            correct += torch.amin(predicted == targets, dim=[-1]).sum()
         total += targets.size(0)
         if problem == "mazes":
-            bit_correct += (predicted == targets)[mask].sum().item()
-            bit_total += mask.sum().item()
+            bit_correct += (predicted == targets)[mask].sum()
+            bit_total += mask.sum()
         elif problem not in {"rule110", "cellular"}:
-            bit_correct += (predicted == targets).sum().item()
+            bit_correct += (predicted == targets).sum()
             bit_total += targets.numel()
 
-    train_loss = train_loss / (batch_idx + 1)
-    acc = 100.0 * correct / total
-    bit_acc = 100.0 * bit_correct / bit_total if bit_total > 0 else 0.0
+    train_loss = (train_loss / (batch_idx + 1)).item()
+    acc = (100.0 * correct / total).item()
+    bit_total_value = bit_total.item()
+    bit_acc = (100.0 * bit_correct / bit_total).item() if bit_total_value > 0 else 0.0
     
     # Diagnostics for progressive are disabled to avoid return_all memory overhead.
     first_five_avg = 0.0
