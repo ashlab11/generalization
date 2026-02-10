@@ -170,17 +170,15 @@ def train(net, loaders, mode, train_setup, device, epoch=0):
         train_loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = train_progressive(net, loaders, train_setup, device, epoch)
     elif mode == 'softmin':
         train_loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = train_softmin(net, loaders, train_setup, device, epoch)
+    elif mode == 'upweight':
+        train_loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = train_upweight(net, loaders, train_setup, device, epoch)
     else:
         raise ValueError(f"{ic.format()}: train_{mode}() not implemented.")
     return train_loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity
 
-def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=None):
+def train_upweight(net, loaders, train_setup, device, epoch=0):
     #Formula:
-    #Ideal loss is the minimum loss x_* + lambda * sum(relu(x_k - x_*)) for k > *
-    #If there is a minimum loss that can be reached, reach it. Afterwards, do not get worse.
-    #Only two ways to reduce total loss: get to better loss eventually, or remain more stable 
-    #after reaching ideal loss
-    #This is a relaxation of that loss, to softmin on both ends
+    #Ideal loss is sum(lambda^k L(x_k))
     
     trainloader = loaders["train"]
     net.train()
@@ -193,26 +191,14 @@ def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=Non
     use_amp = train_setup.use_amp
     scaler = train_setup.scaler
     criterion = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=-100, label_smoothing=0.01)
-    if beta is None:
-        beta = getattr(train_setup, "softmin_beta", 1.0)
-    if lam is None:
-        lam = getattr(train_setup, "softmin_lambda", 0.1)
-    beta = float(beta)
-    if beta <= 0:
-        raise ValueError(f"softmin_beta must be > 0, got {beta}")
+    lam = getattr(train_setup, "upweight_lambda", 1.05)
     
     train_loss = torch.zeros((), device=device)
     correct = torch.zeros((), device=device)
     total = 0
     bit_correct = torch.zeros((), device=device)
     bit_total = torch.zeros((), device=device)
-    track_every_n = 10
     last_h_stats = None  # Keep track of last h_stats for debugging
-    
-    # Track CE loss for first 5 iterations
-    first_five_iter_ce_losses = []
-    # Track gradient sensitivity per iteration
-    loss_grad_sensitivity = []
     
     for batch_idx, (inputs, targets) in enumerate(tqdm(trainloader, leave=False)):
         inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True).long()
@@ -226,7 +212,8 @@ def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=Non
         with autocast_context:
             #[B, Iters, C, L]
             all_outputs = net(inputs, iters_to_do=max_iters, return_all = True)
-            outputs_max_iters = all_outputs[:, -1, :, :].squeeze(1)
+            all_outputs = all_outputs.view(all_outputs.size(0), all_outputs.size(1), all_outputs.size(2), -1)
+            outputs_max_iters = all_outputs[:, -1, :, :]
             B, I, C, L = all_outputs.size()
             
             #NaN detection
@@ -241,32 +228,12 @@ def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=Non
                 targets_exp.reshape(B * I, L),
             )
             loss_all_outputs = loss_all_outputs.view(B, I, L).float()
-            
-            # Compute average CE loss for first 5 iterations (for diagnostic)
-            first_five_iter_means = compute_first_n_iter_loss(all_outputs, targets, criterion, n=15)
-            first_five_iter_ce_losses.append(first_five_iter_means)
-            
-            zero_vec = torch.zeros_like(loss_all_outputs[:, :1, :])
-
-            # Stable log-space computation with temperature beta.
-            log_neg = -beta * loss_all_outputs
-            log_sum_neg = torch.logsumexp(log_neg, dim=1)  # [B, L]
-            softmin_loss = -log_sum_neg / beta + math.log(I) / beta #Term added for log mean rather than log sum
-            
-            relu_diff = F.relu(loss_all_outputs[:, 1:, :] - loss_all_outputs[:, :-1, :])
-            relu_diff = torch.cat([zero_vec, relu_diff], dim=1) #[B, I, L]
-            relu_diff_cumsum = torch.cumsum(relu_diff.flip(1), dim=1).flip(1) # sum_{r>=t} relu_diff[r]
-            relu_suffix = torch.cat([relu_diff_cumsum[:, 1:, :], zero_vec], dim=1)
-            
-            weights = torch.softmax(log_neg, dim=1).detach()
-            relu_loss = (weights * relu_suffix).sum(dim = 1)
-            
-            loss = ((1 - lam) * softmin_loss + lam * relu_loss).mean()
-            
-            # Compute gradient sensitivity diagnostic (on first batch only to save compute)
-            if batch_idx == 0:
-                g_iter = compute_loss_gradient_sensitivity(loss_all_outputs, beta, lam)
-                loss_grad_sensitivity.append(g_iter)
+            loss_weights = torch.pow(
+                torch.full((I,), lam, device=loss_all_outputs.device, dtype=loss_all_outputs.dtype),
+                torch.arange(I, device=loss_all_outputs.device, dtype=loss_all_outputs.dtype),
+            )
+            loss_weights = loss_weights / loss_weights.sum()
+            loss = torch.einsum('ijk,j -> ik', loss_all_outputs, loss_weights).mean()
             
             # NaN detection in loss (before backward)
             if torch.isnan(loss):
@@ -322,11 +289,152 @@ def train_softmin(net, loaders, train_setup, device, epoch=0, beta=None, lam=Non
     bit_total_value = bit_total.item()
     bit_acc = (100.0 * bit_correct / bit_total).item() if bit_total_value > 0 else 0.0
     
-    # Compute average CE loss over first 5 iterations
-    first_five_avg = torch.stack(first_five_iter_ce_losses).mean().item() if first_five_iter_ce_losses else 0.0
+    # Diagnostics for softmin are disabled to reduce memory overhead.
+    first_five_avg = 0.0
+    grad_sensitivity = None
+
+    lr_scheduler.step()
+    warmup_scheduler.dampen()
+
+    return train_loss, acc, bit_acc, first_five_avg, grad_sensitivity
     
-    # Compute gradient sensitivity per iteration
-    grad_sensitivity = torch.stack(loss_grad_sensitivity).mean(dim=0).cpu() if loss_grad_sensitivity else None
+
+def train_softmin(net, loaders, train_setup, device, epoch=0):
+    #Formula:
+    #Ideal loss is the minimum loss x_* + lambda * sum(relu(x_k - x_*)) for k > *
+    #If there is a minimum loss that can be reached, reach it. Afterwards, do not get worse.
+    #Only two ways to reduce total loss: get to better loss eventually, or remain more stable 
+    #after reaching ideal loss
+    #This is a relaxation of that loss, to softmin on both ends
+    
+    trainloader = loaders["train"]
+    net.train()
+    optimizer = train_setup.optimizer
+    lr_scheduler = train_setup.scheduler
+    warmup_scheduler = train_setup.warmup
+    max_iters = train_setup.max_iters
+    problem = train_setup.problem
+    clip = train_setup.clip
+    use_amp = train_setup.use_amp
+    scaler = train_setup.scaler
+    criterion = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=-100, label_smoothing=0.01)
+    beta = getattr(train_setup, "softmin_beta", 1.0)
+    lam = getattr(train_setup, "softmin_lambda", 0.1)
+    beta = float(beta)
+    if beta <= 0:
+        raise ValueError(f"softmin_beta must be > 0, got {beta}")
+    
+    train_loss = torch.zeros((), device=device)
+    correct = torch.zeros((), device=device)
+    total = 0
+    bit_correct = torch.zeros((), device=device)
+    bit_total = torch.zeros((), device=device)
+    track_every_n = 10
+    last_h_stats = None  # Keep track of last h_stats for debugging
+    
+    for batch_idx, (inputs, targets) in enumerate(tqdm(trainloader, leave=False)):
+        inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True).long()
+        targets = targets.view(targets.size(0), -1)
+        
+        optimizer.zero_grad(set_to_none=True)
+
+        # Conditionally apply autocast based on use_amp flag
+        autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
+        
+        with autocast_context:
+            #[B, Iters, C, L]
+            all_outputs = net(inputs, iters_to_do=max_iters, return_all = True)
+            all_outputs = all_outputs.view(all_outputs.size(0), all_outputs.size(1), all_outputs.size(2), -1)
+            outputs_max_iters = all_outputs[:, -1, :, :]
+            B, I, C, L = all_outputs.size()
+            
+            #NaN detection
+            if torch.isnan(all_outputs).any():
+                tqdm.write(f"NaN in outputs at batch {batch_idx}!")
+                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
+                raise ValueError(f"NaN in outputs at epoch {epoch}, batch {batch_idx}")
+            
+            targets_exp = targets.unsqueeze(1).expand(-1, I, -1)
+            loss_all_outputs = criterion(
+                all_outputs.view(B * I, C, L),
+                targets_exp.reshape(B * I, L),
+            )
+            loss_all_outputs = loss_all_outputs.view(B, I, L).float()
+            
+            zero_vec = torch.zeros_like(loss_all_outputs[:, :1, :])
+
+            # Stable log-space computation with temperature beta.
+            log_neg = -beta * loss_all_outputs
+            log_sum_neg = torch.logsumexp(log_neg, dim=1)  # [B, L]
+            softmin_loss = -log_sum_neg / beta + math.log(I) / beta #Term added for log mean rather than log sum
+            
+            relu_diff = F.relu(loss_all_outputs[:, 1:, :] - loss_all_outputs[:, :-1, :])
+            relu_diff = torch.cat([zero_vec, relu_diff], dim=1) #[B, I, L]
+            relu_diff_cumsum = torch.cumsum(relu_diff.flip(1), dim=1).flip(1) # sum_{r>=t} relu_diff[r]
+            relu_suffix = torch.cat([relu_diff_cumsum[:, 1:, :], zero_vec], dim=1)
+            
+            weights = torch.softmax(log_neg, dim=1).detach()
+            relu_loss = (weights * relu_suffix).sum(dim = 1)
+            
+            loss = ((1 - lam) * softmin_loss + lam * relu_loss).mean()
+            
+            # NaN detection in loss (before backward)
+            if torch.isnan(loss):
+                tqdm.write(f"NaN in loss at batch {batch_idx}!")
+                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
+                raise ValueError(f"NaN in loss at epoch {epoch}, batch {batch_idx}")
+        
+        # Use scaler if amp is enabled, otherwise regular backward
+        if use_amp:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+        # Check for NaN in gradients
+        grad_nan = any(torch.isnan(p.grad).any() for p in net.parameters() if p.grad is not None)
+        if grad_nan:
+            tqdm.write(f"NaN in gradients at batch {batch_idx}!")
+            save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
+            raise ValueError(f"NaN in gradients at epoch {epoch}, batch {batch_idx}")
+
+        if clip is not None:
+            if use_amp:
+                scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), clip)
+        
+        if use_amp:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+
+        train_loss += loss.detach()
+        predicted = get_predicted(inputs, outputs_max_iters, problem)
+        if problem in {"rule110", "cellular"}:
+            mask = targets != -100
+            eq = predicted == targets
+            eq = eq | (~mask)
+            correct += torch.amin(eq, dim=[-1]).sum()
+            bit_correct += eq[mask].sum()
+            bit_total += mask.sum()
+        else:
+            correct += torch.amin(predicted == targets, dim=[-1]).sum()
+        total += targets.size(0)
+        if problem == "mazes":
+            bit_correct += (predicted == targets)[mask].sum()
+            bit_total += mask.sum()
+        elif problem not in {"rule110", "cellular"}:
+            bit_correct += (predicted == targets).sum()
+            bit_total += targets.numel()
+
+    train_loss = (train_loss / (batch_idx + 1)).item()
+    acc = (100.0 * correct / total).item()
+    bit_total_value = bit_total.item()
+    bit_acc = (100.0 * bit_correct / bit_total).item() if bit_total_value > 0 else 0.0
+    
+    # Diagnostics for softmin are disabled to reduce memory overhead.
+    first_five_avg = 0.0
+    grad_sensitivity = None
 
     lr_scheduler.step()
     warmup_scheduler.dampen()

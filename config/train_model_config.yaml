@@ -14,3 +14,4 @@ hydra:
 train_log: train_log
 name: training_default
 profile: false
+compile: false

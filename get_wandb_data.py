@@ -4,17 +4,18 @@ import wandb
 
 ENTITY  = "asherlabovich-brown-university"
 PROJECT = "deep-thinking"
-OUT_DIR = "wandb_full_history_sweep3"
+OUT_DIR = "chess_and_sudoku"
 
 api = wandb.Api()
-runs = api.runs(f"{ENTITY}/{PROJECT}")
+runs = api.runs(f"{ENTITY}/{PROJECT}", filters = {
+    'config.problem.name': {'$in': ['sudoku', 'chess']}, 
+    'config.sweep_name': 'difficulty_generalization',
+    'state': 'finished'
+})
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
 for run in runs:
-    if run.config.get("sweep_num") != 3:
-        continue
-
     rows = []
     try:
         for row in run.scan_history(page_size=10000):

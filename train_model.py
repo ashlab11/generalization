@@ -57,8 +57,9 @@ def main(cfg: DictConfig):
                                                    cfg.problem.model.test_iterations["high"] + 1))
     assert 0 <= cfg.problem.hyp.alpha <= 1, "Weighting for loss (alpha) not in [0, 1], exiting."
     profile_mode = bool(getattr(cfg, "profile", False))
+    compile_mode = bool(getattr(cfg, "compile", False))
     if profile_mode:
-        log.info("Profile mode enabled: will run one epoch and log top 10 CPU/CUDA ops.")
+        log.info("Profile mode enabled.")
 
     ####################################################
     #               Dataset and Network and Optimizer
@@ -67,6 +68,12 @@ def main(cfg: DictConfig):
     net, start_epoch, optimizer_state_dict = dt.utils.load_model_from_checkpoint(cfg.problem.name,
                                                                                  cfg.problem.model,
                                                                                  device)
+    if compile_mode:
+        if isinstance(net, torch.nn.DataParallel):
+            net.module = torch.compile(net.module, fullgraph=False, dynamic=False, mode="reduce-overhead")
+        else:
+            net = torch.compile(net, fullgraph=False, dynamic=False, mode="reduce-overhead")
+        log.info("torch.compile enabled (fullgraph=False, dynamic=False, mode=reduce-overhead).")
     pytorch_total_params = sum(p.numel() for p in net.parameters())
     
     # Initialize wandb with model info
@@ -117,7 +124,13 @@ def main(cfg: DictConfig):
 
     ####################################################
     #        Train
-    final_epoch_exclusive = min(cfg.problem.hyp.epochs, start_epoch + 1) if profile_mode else cfg.problem.hyp.epochs
+    if profile_mode:
+        final_epoch_exclusive = min(cfg.problem.hyp.epochs, start_epoch + 2)
+        profiled_epoch = start_epoch + 1 if final_epoch_exclusive - start_epoch >= 2 else start_epoch
+        log.info(f"Profile mode: running {max(final_epoch_exclusive - start_epoch, 0)} epoch(s), profiling epoch {profiled_epoch}.")
+    else:
+        final_epoch_exclusive = cfg.problem.hyp.epochs
+        profiled_epoch = None
     log.info(f"==> Starting training for {max(final_epoch_exclusive - start_epoch, 0)} epochs...")
     highest_val_acc_so_far = -1
     best_so_far = False
@@ -130,7 +143,7 @@ def main(cfg: DictConfig):
         
         try:
             start = time.time()
-            if profile_mode:
+            if profile_mode and epoch == profiled_epoch:
                 activities = [ProfilerActivity.CPU]
                 if device == "cuda":
                     activities.append(ProfilerActivity.CUDA)

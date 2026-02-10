@@ -13,8 +13,10 @@ import argparse
 import copy
 import glob
 import json
+import os
 
 import pandas as pd
+from omegaconf import OmegaConf
 
 
 def get_little_df_from_one_run(data_dict):
@@ -39,16 +41,28 @@ def get_df(filepath, acc_filter):
     pd.set_option("display.max_rows", None)
     dfs = []
     num_checkpoints = 0
-    for f_name in glob.iglob(f"{filepath}/**/*testing*/stats.json", recursive=True):
-        num_checkpoints += 1
-        with open(f_name, "r") as fp:
-            data = json.load(fp)
-        if acc_filter is not None:
-            m = data["max_iters"]
-            if data["train_acc"][str(m)] > acc_filter:
+    for pattern in (f"{filepath}/stats.json",
+                    f"{filepath}/**/*testing*/stats.json",
+                    f"{filepath}/**/*training*/stats.json"):
+        for f_name in glob.iglob(pattern, recursive=True):
+            num_checkpoints += 1
+            with open(f_name, "r") as fp:
+                data = json.load(fp)
+            cfg_name = os.path.join(os.path.dirname(f_name), ".hydra", "config.yaml")
+            if os.path.isfile(cfg_name):
+                cfg = OmegaConf.load(cfg_name)
+                if "model" not in data:
+                    data["model"] = cfg.problem.model.model
+                if "alpha" not in data:
+                    data["alpha"] = cfg.problem.hyp.alpha
+                if "model_path" not in data:
+                    data["model_path"] = os.path.dirname(f_name)
+            if acc_filter is not None:
+                m = data["max_iters"]
+                if data["train_acc"][str(m)] > acc_filter:
+                    dfs.append(get_little_df_from_one_run(data))
+            else:
                 dfs.append(get_little_df_from_one_run(data))
-        else:
-            dfs.append(get_little_df_from_one_run(data))
     df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
     num_trained = len(df)
     return df, num_checkpoints, num_trained

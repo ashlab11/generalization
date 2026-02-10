@@ -6,7 +6,7 @@ name: chess
 train_data: 1600
 test_data: 2000
 
-max_train_samples: 10000
+max_train_samples: 50000
 max_test_samples: 10000
 
 model:

@@ -135,15 +135,17 @@ class MHA(nn.Module):
             self.flex_attention_compiled = torch.compile(flex_attention)
         self._compute_attn_stats = False
         
-    def setup(self, x_shape):
+    def setup(self, x_shape, device=None):
         self.rope = RoPENd((*x_shape, self.head_dim))
+        if device is not None:
+            self.rope = self.rope.to(device)
         self.shape = x_shape
         self.is_setup = True
     
     def forward(self, x):
         # x: (B, ..., D), and self-attention requires (B, N, L, D)
         if not self.is_setup or self.shape != x.shape[1:-1]:
-            self.setup(x.shape[1:-1])
+            self.setup(x.shape[1:-1], device=x.device)
         spatial_dims = x.shape[1:-1]
         L = math.prod(spatial_dims)
         B = x.shape[0] 

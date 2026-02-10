@@ -6,7 +6,7 @@ name: sudoku
 train_data: expert
 test_data: extreme
 
-max_train_samples: 100000
+max_train_samples: 50000
 max_test_samples: 10000
 
 model:

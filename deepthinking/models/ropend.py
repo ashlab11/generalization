@@ -27,7 +27,9 @@ class RoPENd(torch.nn.Module):
         self.register_buffer('rotations', rotations)
 
     def forward(self, x):
-        # convert input into complex numbers to perform rotation
+        # view_as_complex does not support bfloat16, so rotate in float32 and cast back.
+        original_dtype = x.dtype
+        x = x.float()
         x = torch.view_as_complex(x.reshape(*x.shape[:-1], -1, 2))
         pe_x = self.rotations * x
-        return torch.view_as_real(pe_x).flatten(-2)
+        return torch.view_as_real(pe_x).flatten(-2).to(original_dtype)
