@@ -16,6 +16,8 @@ monotone_margin: 0.0
 noise_prob: 0.0
 noise_scale: 0.01
 residual_method: add
+ccot: none
+num_ccot_tokens: 10
 test_iterations:
   low: 30
   high: 40

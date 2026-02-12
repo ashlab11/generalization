@@ -12,6 +12,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+import math
 
 from .attention import AttentionBlock
 from .ema_linear import EMA_Linear
@@ -24,7 +25,7 @@ class DTTransformer(nn.Module):
                  injection_type='concat', norm_type='peri', norm_before_head=True,
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
-                 in_channels = 1, out_channels = 2, num_sinks=0, ema_act = False,
+                 in_channels = 1, out_channels = 2, num_sinks=0, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
                  noise_prob = 0.0, noise_scale = 0.01, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -32,7 +33,25 @@ class DTTransformer(nn.Module):
         self.ema_act = ema_act
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels)
+        self.ccot = ccot
         
+        assert self.ccot == 'none' or residual_method != 'lstm', "lstm cannot be used with continuous chain of thought"
+        assert self.ccot == 'none' or lanes == 1, 'good luck getting ccot to work with mhc'
+        assert not (lanes > 1 and residual_method != 'mhc'), "if there are multiple lanes, residual method must be mhc"
+        assert not (lanes <= 1 and residual_method == 'mhc') and lanes < 6 and int(lanes) == lanes, "mhc must have integer lanes between 2-5"
+        assert recall_inner or injection_type != 'concat', 'concat injection requires recall inside each subfunc'
+        assert recall_inner or residual_method != 'mhc', 'mhc requires recall_inner'
+        
+        match self.ccot:
+            case 'none':
+                self.register_buffer('ccot_tokens', torch.empty(0, hidden_dim)) #I, D
+            case 'fixed':
+                self.ccot_tokens = nn.Parameter(torch.randn((num_ccot_tokens, hidden_dim)))
+            case 'iterative':
+                self.base_ccot = nn.Parameter(torch.randn(1, hidden_dim))
+                self.get_new_ccot = lambda batch_size: self.base_ccot.clone().unsqueeze(0).repeat(batch_size, 1, 1)
+                self.register_buffer('ccot_tokens', torch.empty(0, hidden_dim)) #I, D
+            
         #Core blocks
         self.recur_blocks = nn.ModuleList([AttentionBlock(
                                            hidden_dim = hidden_dim,
@@ -86,6 +105,8 @@ class DTTransformer(nn.Module):
             self.reset = reset_ema_buffers
         
     def forward(self, x, iters_to_do, interim_thought=None, return_all = False, **kwargs):
+        ccot_tokens = self.ccot_tokens.unsqueeze(0).repeat(x.shape[0], 1, 1) #[B, I, D]
+        
         # Normalize input to (B, *spatial_dims, C)
         if x.dim() >= 2 and x.size(1) == self.in_channels:
             # (B, C, *spatial_dims) -> (B, *spatial_dims, C)
@@ -130,7 +151,10 @@ class DTTransformer(nn.Module):
             
             #CORE BLOCKS
             for block in self.recur_blocks:
-                interim_thought = block(interim_thought, initial_thought)
+                interim_thought, ccot_tokens = block(interim_thought, initial_thought, ccot_tokens)
+                if self.ccot == 'iterative' and i % 5 == 0: #Only add iterations every five
+                    ccot_tokens = torch.cat([ccot_tokens, self.get_new_ccot(x.shape[0])], dim = 1)
+            
                 
             #Track convergence
             if track_convergence:

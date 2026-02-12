@@ -1,4 +1,3 @@
-from sympy import Q, false
 import math
 import torch
 from torch import nn, einsum
@@ -10,11 +9,16 @@ from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from torchtune.modules import RotaryPositionalEmbeddings
 from .ropend import RoPENd
 
+#TODO: fix the rest of ccot tokens, have it work with everything except for conv. 
+
 #Sliding window for local attention
 WINDOW_SIZE = 5
-def get_sliding_window(sinks, spatial_dims):
+def get_sliding_window(sinks, spatial_dims, num_ccot=0):
     """General sliding window for arbitrary spatial dimensions using Manhattan distance."""
-    
+    spatial_len = math.prod(spatial_dims)
+    ccot_start = sinks + spatial_len
+    ccot_end = ccot_start + num_ccot
+
     # Compute cumulative products for coordinate conversion (row-major flattening)
     # cumprods[i] = product of spatial_dims[i+1:] 
     # For (H, W): cumprods = [W, 1] so row = idx // W, col = idx % W
@@ -41,7 +45,9 @@ def get_sliding_window(sinks, spatial_dims):
     
     def sliding_window(b, h, q_idx, kv_idx):
         sink = kv_idx <= sinks - 1
-        
+        ccot_kv = (kv_idx >= ccot_start) & (kv_idx < ccot_end)
+        ccot_q = (q_idx >= spatial_len) & (q_idx < (spatial_len + num_ccot))
+
         # Convert indices to coordinates: (num_dims, ...)
         q_coords = idx_to_coords(q_idx)
         kv_coords = idx_to_coords(kv_idx)
@@ -50,7 +56,8 @@ def get_sliding_window(sinks, spatial_dims):
         diff = torch.abs(q_coords.float() - kv_coords.float()).sum(dim=0)
         
         window_mask = diff <= WINDOW_SIZE
-        return sink | window_mask
+        # CCoT queries attend globally; CCoT keys are always visible.
+        return sink | ccot_kv | ccot_q | window_mask
     
     return sliding_window
 
@@ -94,8 +101,8 @@ class ConvAttn(nn.Module):
             self.conv2 = self.conv2.to(device)
         self.is_setup = True
         
-    def forward(self, x):
-        #Lazy initialization
+    def forward(self, x, ccot_tokens):
+        #Lazy initialization, ccot_tokens used only for backwards compatibility
         if not self.is_setup:
             self.setup(len(x.shape[1:-1]), device=x.device)
 
@@ -103,7 +110,7 @@ class ConvAttn(nn.Module):
         x = F.relu(self.lin(x)) #[B, ..., D]
         x = x.permute(0, -1, *range(1, x.dim() - 1)) #[B, D, ...]
         x = self.conv2(F.relu(self.conv1(x)))
-        return x.permute(0, *range(2, x.dim()), 1) #[B, ..., D]
+        return x.permute(0, *range(2, x.dim()), 1), ccot_tokens #[B, ..., D]
     
 #Multi-headed attention with different attention methods
 class MHA(nn.Module):
@@ -142,14 +149,25 @@ class MHA(nn.Module):
         self.shape = x_shape
         self.is_setup = True
     
-    def forward(self, x):
+    def forward(self, x, ccot_tokens):
         # x: (B, ..., D), and self-attention requires (B, N, L, D)
+        # ccot tokens are B, I, D
         if not self.is_setup or self.shape != x.shape[1:-1]:
             self.setup(x.shape[1:-1], device=x.device)
         spatial_dims = x.shape[1:-1]
         L = math.prod(spatial_dims)
         B = x.shape[0] 
         qkv = self.qkv(x)  # (B, ..., 3*D)
+        
+        num_ccot = ccot_tokens.shape[1]
+        #Working with chain of thought
+        if ccot_tokens is not None:
+            qkv_ccot = self.qkv(ccot_tokens)
+            q_ccot, k_ccot, v_ccot = qkv_ccot.chunk(3, dim = -1) #Each (I, D)
+            q_ccot = q_ccot.reshape(B, num_ccot, self.num_heads, self.head_dim).transpose(1, 2)
+            k_ccot = k_ccot.reshape(B, num_ccot, self.num_heads, self.head_dim).transpose(1, 2)
+            v_ccot = v_ccot.reshape(B, num_ccot, self.num_heads, self.head_dim).transpose(1, 2)
+            
         q, k, v = qkv.chunk(3, dim=-1)  # Each: (B, ..., D)
         
         # Reshape to (B, ..., N, D) and then permute to (B, N, ..., D).
@@ -172,13 +190,25 @@ class MHA(nn.Module):
             sink_v = self.sink_v.unsqueeze(0).expand(B, -1, -1, -1).transpose(1, 2).to(v.dtype)
             k = torch.cat([sink_k, k], dim=2)
             v = torch.cat([sink_v, v], dim=2)
+        #Shape is [B, N, S + L, D]
+        if ccot_tokens is not None:
+            q = torch.cat([q, q_ccot], dim = 2)
+            k = torch.cat([k, k_ccot], dim = 2)
+            v = torch.cat([v, v_ccot], dim = 2)
         
         match self.attn_type:
             case 'local':
-                # Cache by full spatial signature -- probably unnecessary, but who knows about the future
-                mask_key = (tuple(spatial_dims), int(self.num_sinks))
+                # Cache by full spatial signature, to work with changing numbers of num_ccot
+                mask_key = (tuple(spatial_dims), int(self.num_sinks), int(num_ccot))
                 if mask_key not in self._mask_cache:
-                    self._mask_cache[mask_key] = create_block_mask(get_sliding_window(self.num_sinks, spatial_dims), B=None, H=None, Q_LEN=L, KV_LEN=L + self.num_sinks, _compile=True)
+                    self._mask_cache[mask_key] = create_block_mask(
+                        get_sliding_window(self.num_sinks, spatial_dims, num_ccot),
+                        B=None,
+                        H=None,
+                        Q_LEN=L + num_ccot,
+                        KV_LEN=L + self.num_sinks + num_ccot,
+                        _compile=True
+                    )
                 out = self.flex_attention_compiled(q, k, v, block_mask=self._mask_cache[mask_key])
             case 'full':
                 use_flash = q.is_cuda and q.dtype in (torch.float16, torch.bfloat16)
@@ -193,12 +223,14 @@ class MHA(nn.Module):
                 out = num / denom
             
         if self._compute_attn_stats and self.attn_type != 'linear' and len(self.shape) == 1: #Only compute for 1D attention, others are too hard
-            self._compute_attention_stats(q, k, L)
+            self._compute_attention_stats(q[:, :, :L, :], k, L)
             
         # Reshape back: (B, num_heads, L, head_dim) -> (B, L, num_heads, head_dim) -> (B, *spatial_dims, D)
+        ccot_tokens = out[:, :, L:, :].transpose(1, 2).reshape(B, num_ccot, self.output_dim)
+        out = out[:, :, :L, :] #:L is necessary for ccot tokens
         out = out.transpose(1, 2).reshape(B, *spatial_dims, self.output_dim)
         out = self.out_proj(out)
-        return out 
+        return out, ccot_tokens
 
     def _compute_attention_stats(self, q, k, seq_len):
         # Stats are computed assuming non-causal attention.
@@ -242,11 +274,6 @@ class AttentionBlock(nn.Module):
         # For LSTM: register buffer to store cell state (will be reset each forward pass)
         if residual_method == 'lstm':
             self.register_buffer('_lstm_cell_state', None)
-        
-        assert not (lanes > 1 and residual_method != 'mhc'), "if there are multiple lanes, residual method must be mhc"
-        assert not (lanes <= 1 and residual_method == 'mhc') and lanes < 6 and int(lanes) == lanes, "mhc must have integer lanes between 2-5"
-        assert recall_inner or injection_type != 'concat', 'concat injection requires recall inside each subfunc'
-        assert recall_inner or residual_method != 'mhc', 'mhc requires recall_inner'
         
         match self.norm_type:
             case 'pre':
@@ -357,31 +384,43 @@ class AttentionBlock(nn.Module):
             case 'mhc':
                 pass
     
-    def forward(self, x, h):
+    def forward(self, x, h, ccot_tokens):
         #x, h = [B, ..., C] depending on problem, but we don't need to deal with it in full block, just the individual mechanisms
+        B, D = x.shape[0], x.shape[-1]
         
         # Reset LSTM cell state at start of each forward pass
+        spatial_dims = x.shape[1:-1]
+        L = math.prod(spatial_dims)
         if self.residual_method == 'lstm':
             self._lstm_cell_state = None
             
         if self.lanes > 1:
-            return self._forward_mhc(x, h)
+            return self._forward_mhc(x, h), ccot_tokens #ccot tokens will not be used, but kept for backwards compatibility
 
         if not self.recall_inner:
             x = self.injection_func(x, h)
-            
-        def run_block(block, x):
-            shortcut = x
-            x = self.pre_norm_func(x)
+        
+        def run_block(block_name, x, ccot_tokens):
+            #Both x and ccot are [B, *, D]
+            shortcut_flat = torch.cat([x.reshape(B, -1, D), ccot_tokens], dim = 1)
+            x, ccot_tokens = self.pre_norm_func(x), self.pre_norm_func(ccot_tokens)
             if self.recall_inner:
                 x = self.injection_func(x, h)
-            x = block(x)
-            x = self.post_norm_func(self.residual_func(shortcut, self.peri_norm_func(x)))
-            return x
+                if self.injection_type == 'concat': #No "context" for ccot
+                    ccot_tokens = torch.cat([ccot_tokens, torch.zeros_like(ccot_tokens)], dim = -1)
+            if block_name == 'attn':
+                x, ccot_tokens = self.attn(x, ccot_tokens) 
+            if block_name == 'mlp':
+                x, ccot_tokens = self.mlp(x), self.mlp(ccot_tokens)
+            update_flat = torch.cat([x.reshape(B, -1, D), ccot_tokens], dim = 1)
+            resid_flat = self.post_norm_func(self.residual_func(shortcut_flat, self.peri_norm_func(update_flat)))
+            x, ccot_tokens = resid_flat[:, :L, :].reshape(B, *spatial_dims, D), resid_flat[:, L:, :]
+            return x, ccot_tokens
         
-        x = run_block(self.attn, x)
-        x = run_block(self.mlp, x)
-        return self.post_relu(x)
+        x, ccot_tokens = run_block('attn', x, ccot_tokens)
+        x, ccot_tokens = run_block('mlp', x, ccot_tokens)
+        
+        return self.post_relu(x), self.post_relu(ccot_tokens)
 
     def _forward_mhc(self, x, h):
         mixing_M = einsum('p,pij->ij', F.softmax(self.perm_logits, dim=0), self.perm_matrices)

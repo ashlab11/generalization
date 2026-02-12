@@ -52,7 +52,7 @@ def test(net, loaders, mode, iters, problem, device, use_amp=False, return_bitwi
                     if not diag_state["enabled"]:
                         return
                     with torch.no_grad():
-                        h = output.to(torch.float32)
+                        h = (output[0] if isinstance(output, tuple) else output).to(torch.float32)
                         if h.dim() == 3:
                             token_norm = h.norm(dim=-1)
                             diag_stats['h_norm'].append(token_norm.mean().item())
