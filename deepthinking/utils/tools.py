@@ -40,7 +40,8 @@ def get_dataloaders(problem_args):
         return prepare_prefix_loader(train_batch_size=problem_args.hyp.train_batch_size,
                                      test_batch_size=problem_args.hyp.test_batch_size,
                                      train_data=problem_args.train_data,
-                                     test_data=problem_args.test_data)
+                                     test_data=problem_args.test_data, 
+                                     exact=problem_args.exact)
     elif problem_args.name in {"rule110", "cellular"}:
         extra = {k: v for k, v in dict(problem_args).items()
                  if k not in ["name", "hyp", "model", "train_data", "test_data"]}
@@ -123,8 +124,9 @@ def get_optimizer(optim_args, model_args, net, state_dict):
         for name, param in net.named_parameters():
             is_bias = name.endswith('.bias') or 'bias' in name.lower()
             is_norm = any(norm_name in name.lower() for norm_name in ['norm', 'ln', 'bn', 'gn', 'rmsnorm', 'layernorm'])
+            is_ccot = 'ccot' in name.lower()
             
-            if is_bias or is_norm:
+            if is_bias or is_norm or is_ccot:
                 no_decay_params.append(param)
             else:
                 decay_params.append(param)
@@ -146,8 +148,9 @@ def get_optimizer(optim_args, model_args, net, state_dict):
                 # Check if parameter is bias or belongs to a normalization layer
                 is_bias = name.endswith('.bias') or 'bias' in name.lower()
                 is_norm = any(norm_name in name.lower() for norm_name in ['norm', 'ln', 'bn', 'gn', 'rmsnorm', 'layernorm'])
+                is_ccot = 'ccot' in name.lower()
                 
-                if is_bias or is_norm:
+                if is_bias or is_norm or is_ccot:
                     no_decay_params.append(param)
                 else:
                     decay_params.append(param)

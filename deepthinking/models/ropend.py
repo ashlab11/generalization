@@ -27,9 +27,11 @@ class RoPENd(torch.nn.Module):
         self.register_buffer('rotations', rotations)
 
     def forward(self, x):
-        # view_as_complex does not support bfloat16, so rotate in float32 and cast back.
-        original_dtype = x.dtype
-        x = x.float()
-        x = torch.view_as_complex(x.reshape(*x.shape[:-1], -1, 2))
-        pe_x = self.rotations * x
-        return torch.view_as_real(pe_x).flatten(-2).to(original_dtype)
+        # Apply RoPE in real space to avoid large float32 temporary allocations.
+        x = x.reshape(*x.shape[:-1], -1, 2)
+        x_real, x_imag = x[..., 0], x[..., 1]
+        rot_real = self.rotations.real.to(dtype=x_real.dtype, device=x_real.device)
+        rot_imag = self.rotations.imag.to(dtype=x_real.dtype, device=x_real.device)
+        out_real = x_real * rot_real - x_imag * rot_imag
+        out_imag = x_real * rot_imag + x_imag * rot_real
+        return torch.stack((out_real, out_imag), dim=-1).flatten(-2)

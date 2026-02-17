@@ -147,15 +147,21 @@ def main(cfg: DictConfig):
                 activities = [ProfilerActivity.CPU]
                 if device == "cuda":
                     activities.append(ProfilerActivity.CUDA)
-                with profile(activities=activities, record_shapes=False, profile_memory=False, with_stack=False) as prof:
+                with profile(activities=activities, record_shapes=False, profile_memory=True, with_stack=False) as prof:
                     loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = dt.train(
                         net, loaders, cfg.problem.hyp.train_mode, train_setup, device, epoch
                     )
                 log.info("Top 10 ops by self CPU time:")
                 log.info("\n" + prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
+                log.info("Top 20 ops by self CPU memory:")
+                log.info("\n" + prof.key_averages().table(sort_by="self_cpu_memory_usage", row_limit=20))
                 if device == "cuda":
                     log.info("Top 10 ops by self CUDA time:")
                     log.info("\n" + prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10))
+                    log.info("Top 20 ops by self CUDA memory:")
+                    log.info("\n" + prof.key_averages().table(sort_by="self_cuda_memory_usage", row_limit=20))
+                    log.info("Top 20 ops by CUDA memory (total):")
+                    log.info("\n" + prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=20))
             else:
                 loss, acc, bit_acc, first_five_ce_avg, grad_sensitivity = dt.train(
                     net, loaders, cfg.problem.hyp.train_mode, train_setup, device, epoch

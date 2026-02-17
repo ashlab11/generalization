@@ -5,6 +5,7 @@ defaults:
 name: prefix_sums
 test_data: 512
 train_data: 32
+exact: true
 
 model:
   in_channels: 1

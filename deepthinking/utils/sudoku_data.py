@@ -68,6 +68,9 @@ class SudokuExtremeDataset(data.Dataset):
         root,
         split="train",
         difficulty=None,
+        difficulty_bounds=None,
+        min_rating=None,
+        max_rating=None,
         max_samples=None,
         one_hot=True,
         download=True,
@@ -76,6 +79,8 @@ class SudokuExtremeDataset(data.Dataset):
         self.root = root
         self.split = split
         self.difficulty = difficulty
+        self.min_rating = min_rating
+        self.max_rating = max_rating
         self.max_samples = max_samples
         self.one_hot = one_hot
         self.cumulative_difficulty = cumulative_difficulty
@@ -90,10 +95,14 @@ class SudokuExtremeDataset(data.Dataset):
         if not os.path.exists(self.csv_path):
             raise FileNotFoundError(f"Sudoku CSV not found: {self.csv_path}")
 
-        self.bounds = _difficulty_bounds(self.csv_path) if difficulty is not None else None
+        self.bounds = difficulty_bounds if difficulty is not None else None
         self.inputs, self.targets = self._build_tensors()
 
     def _keep_row(self, rating):
+        if self.min_rating is not None and rating < self.min_rating:
+            return False
+        if self.max_rating is not None and rating > self.max_rating:
+            return False
         if self.difficulty is None:
             return True
         if self.difficulty not in self.bounds:
@@ -114,9 +123,9 @@ class SudokuExtremeDataset(data.Dataset):
                 if not question or not answer:
                     continue
                 try:
-                    rating = float(row.get("rating", row.get("Rating", 0)))
+                    rating = int(row.get("rating", row.get("Rating", 0)))
                 except (TypeError, ValueError):
-                    rating = 0.0
+                    continue
                 if not self._keep_row(rating):
                     continue
 
@@ -157,8 +166,26 @@ def prepare_sudoku_loader(
     max_test_samples=None,
     **kwargs,
 ):
-    if train_data not in {"easy", "medium", "hard", "expert", None}:
-        raise ValueError("difficulty must be easy, medium, hard, expert, or None")
+    def _normalize_level(value):
+        if isinstance(value, str):
+            value = value.strip().lower()
+            if value in {"top20", "top_20", "top-20"}:
+                return "extreme"
+            if value.isdigit():
+                return int(value)
+        return value
+
+    train_data = _normalize_level(train_data)
+    test_data = _normalize_level(test_data)
+
+    band_levels = {"easy", "medium", "hard", "expert", "extreme", None}
+    using_band_levels = train_data in band_levels and test_data in band_levels
+    using_int_levels = isinstance(train_data, int) and isinstance(test_data, int)
+    if not using_band_levels and not using_int_levels:
+        raise ValueError(
+            "Use named levels (easy/medium/hard/expert/extreme/top20) for both train/test, "
+            "or integer levels for both train/test."
+        )
 
     # Ignore unrelated problem config keys (for example, model settings).
     dataset_kwargs = {}
@@ -166,12 +193,30 @@ def prepare_sudoku_loader(
         if key in kwargs:
             dataset_kwargs[key] = kwargs[key]
 
+    root = "../../../data"
+    raw_dir = os.path.join(root, "sudoku_extreme", "raw")
+    if dataset_kwargs.get("download", True):
+        _download(SUDOKU_TRAIN_URL, raw_dir)
+        _download(SUDOKU_TEST_URL, raw_dir)
+    train_csv_path = os.path.join(raw_dir, "train.csv")
+
+    train_kwargs = {}
+    test_kwargs = {}
+    if using_band_levels:
+        # Always define split thresholds from train.csv for consistent train/test meaning.
+        bounds = _difficulty_bounds(train_csv_path)
+        train_kwargs = {"difficulty": train_data, "difficulty_bounds": bounds, "cumulative_difficulty": True}
+        test_kwargs = {"difficulty": test_data, "difficulty_bounds": bounds}
+    else:
+        # Integer levels: train on one exact level, test on strictly higher levels.
+        train_kwargs = {"min_rating": train_data, "max_rating": train_data}
+        test_kwargs = {"min_rating": train_data + 1, "max_rating": test_data}
+
     trainset_full = SudokuExtremeDataset(
-        "../../../data",
+        root,
         split="train",
-        difficulty=train_data,
         max_samples=max_train_samples,
-        cumulative_difficulty=True,
+        **train_kwargs,
         **dataset_kwargs,
     )
     train_len = int(0.8 * len(trainset_full))
@@ -181,10 +226,10 @@ def prepare_sudoku_loader(
         generator=torch.Generator().manual_seed(42),
     )
     testset = SudokuExtremeDataset(
-        "../../../data",
+        root,
         split="test",
-        difficulty=test_data,
         max_samples=max_test_samples,
+        **test_kwargs,
         **dataset_kwargs,
     )
 

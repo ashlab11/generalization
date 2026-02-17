@@ -8,6 +8,7 @@ norm_before_head: true
 recall_inner: false
 attn_type: local
 num_sinks: 0
+local_radius: 5
 hidden_dropout: 0
 init_method: default
 max_iters: 30

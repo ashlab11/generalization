@@ -7,5 +7,5 @@ test_data: 33
 train_data: 9
 
 model:
-  in_channels: 1
+  in_channels: 3
   out_channels: 2

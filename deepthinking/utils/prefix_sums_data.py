@@ -23,9 +23,17 @@ from easy_to_hard_data import PrefixSumDataset
 
 
 def prepare_prefix_loader(train_batch_size, test_batch_size, train_data, test_data,
-                          train_split=0.8, shuffle=True):
+                          train_split=0.8, exact = True, shuffle=True):
 
-    dataset = PrefixSumDataset("../../../data", num_bits=train_data)
+    if exact:
+        dataset = PrefixSumDataset("../../../data", num_bits=train_data)
+    else:
+        num_bit_list = range(16, train_data + 1) #prefix-sums starts at 16-bit
+        datasets = []
+        for bits in num_bit_list:
+            datasets.append(PrefixSumDataset("../../../data", num_bits=bits)) 
+        dataset = data.ConcatDataset(datasets) 
+            
     testset = PrefixSumDataset("../../../data", num_bits=test_data)
 
     train_split = int(train_split * len(dataset))

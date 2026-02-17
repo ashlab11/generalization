@@ -1,2 +1,2 @@
 defaults:
-  - hyp: _default_hyperparameters
+  - _default_hyperparameters

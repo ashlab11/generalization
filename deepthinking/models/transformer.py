@@ -25,7 +25,7 @@ class DTTransformer(nn.Module):
                  injection_type='concat', norm_type='peri', norm_before_head=True,
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
-                 in_channels = 1, out_channels = 2, num_sinks=0, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
+                 in_channels = 1, out_channels = 2, num_sinks=0, local_radius=5, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
                  noise_prob = 0.0, noise_scale = 0.01, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -41,6 +41,8 @@ class DTTransformer(nn.Module):
         assert not (lanes <= 1 and residual_method == 'mhc') and lanes < 6 and int(lanes) == lanes, "mhc must have integer lanes between 2-5"
         assert recall_inner or injection_type != 'concat', 'concat injection requires recall inside each subfunc'
         assert recall_inner or residual_method != 'mhc', 'mhc requires recall_inner'
+        assert not (ccot == 'iterative' and attn_type == 'local'), "iterative ccot currently doesn't work with local attn"
+        assert ccot == 'none' or attn_type != 'conv', "conv doesn't work with ccot (dimension mismatch)"
         
         match self.ccot:
             case 'none':
@@ -63,6 +65,7 @@ class DTTransformer(nn.Module):
                                            residual_method = residual_method,
                                            attn_type = attn_type,
                                            num_sinks=num_sinks,
+                                           local_radius=local_radius,
                                            post_relu=post_relu
                                            ) 
                                            for _ in range(num_blocks)])
@@ -128,7 +131,9 @@ class DTTransformer(nn.Module):
         
         # Infer spatial dimensions from x: x is (B, *spatial_dims, C) after transformation
         spatial_dims = x.shape[1:-1]  # All dims except batch and channel
-        all_outputs = torch.zeros((x.size(0), iters_to_do, self.out_channels, *spatial_dims)).to(x.device)
+        needs_all_outputs = return_all or not self.training
+        if needs_all_outputs:
+            all_outputs = torch.zeros((x.size(0), iters_to_do, self.out_channels, *spatial_dims)).to(x.device)
         track_norm_ratio = getattr(self, "_compute_h_norm_ratio", False)
         track_convergence = getattr(self, "_compute_convergence", False)
         
@@ -171,7 +176,8 @@ class DTTransformer(nn.Module):
             out = self.head(head_input)
             # out is (B, *spatial_dims, out_channels), need (B, out_channels, *spatial_dims) for all_outputs
             out = out.permute(0, -1, *range(1, out.dim() - 1))
-            all_outputs[:, i] = out
+            if needs_all_outputs:
+                all_outputs[:, i] = out
             if track_norm_ratio:
                 h_flat = (interim_thought.mean(dim=0) if self.is_mhc else interim_thought).detach().to(torch.float32).reshape(interim_thought.size(1) if self.is_mhc else interim_thought.size(0), -1)
                 h_norms.append(h_flat.norm(dim=-1).mean().item())

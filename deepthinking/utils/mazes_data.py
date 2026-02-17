@@ -10,6 +10,9 @@
 """
 
 import os
+import shutil
+import tarfile
+import urllib.request as ur
 import torch
 from torch.utils import data
 from easy_to_hard_data import MazeDataset
@@ -21,11 +24,43 @@ from easy_to_hard_data import MazeDataset
 #     Unused import (W0611).
 # pylint: disable=R0912, R0915, E1101, E1102, C0103, W0702, R0914, C0116, C0115, W0611
 
+MAZE_BASE_URL = "https://cs.umd.edu/~tomg/download/Easy_to_Hard_Datav2"
+MAZE_ROOT = "../../../data"
+
+
+def _maze_files_exist(root, folder_name):
+    inputs_path = os.path.join(root, folder_name, "inputs.npy")
+    solutions_path = os.path.join(root, folder_name, "solutions.npy")
+    return os.path.exists(inputs_path) and os.path.exists(solutions_path)
+
+
+def _ensure_maze_split(root, train, size):
+    folder_name = f"maze_data_{'train' if train else 'test'}_{size}"
+    if _maze_files_exist(root, folder_name):
+        return
+
+    os.makedirs(root, exist_ok=True)
+    archive_name = f"{folder_name}.tar.gz"
+    archive_path = os.path.join(root, archive_name)
+    if not os.path.exists(archive_path) or os.path.getsize(archive_path) == 0:
+        url = f"{MAZE_BASE_URL}/{archive_name}"
+        print(f"Downloading {url}")
+        with ur.urlopen(url) as response, open(archive_path, "wb") as f:
+            shutil.copyfileobj(response, f)
+
+    with tarfile.open(archive_path) as archive:
+        archive.extractall(root)
+
+    if not _maze_files_exist(root, folder_name):
+        raise RuntimeError(f"Maze data missing after extract: {folder_name}")
+
 
 def prepare_maze_loader(train_batch_size, test_batch_size, train_data, test_data, shuffle=True):
 
-    train_data = MazeDataset("../../../data", train=True, size=train_data, download=True)
-    testset = MazeDataset("../../../data", train=False, size=test_data, download=True)
+    _ensure_maze_split(MAZE_ROOT, train=True, size=train_data)
+    _ensure_maze_split(MAZE_ROOT, train=False, size=test_data)
+    train_data = MazeDataset(MAZE_ROOT, train=True, size=train_data, download=False)
+    testset = MazeDataset(MAZE_ROOT, train=False, size=test_data, download=False)
 
     train_split = int(0.8 * len(train_data))
 

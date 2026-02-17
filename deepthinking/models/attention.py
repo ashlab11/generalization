@@ -9,63 +9,51 @@ from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from torchtune.modules import RotaryPositionalEmbeddings
 from .ropend import RoPENd
 
-#TODO: fix the rest of ccot tokens, have it work with everything except for conv. 
+#TODO: make this sliding window really easy to understand 
 
+#If we have [N_1 x N_2 x N_3 x ...]
+#value k in N_1 is k // (N_2 x N_3 x N_4 x ..),
+#value k in N_2 is (k % N_1) // (N_3 x N_4 x ...)
 #Sliding window for local attention
-WINDOW_SIZE = 5
-def get_sliding_window(sinks, spatial_dims, num_ccot=0):
+def get_sliding_window(sinks, spatial_dims, device, num_ccot=0, window_size=5):
     """General sliding window for arbitrary spatial dimensions using Manhattan distance."""
     spatial_len = math.prod(spatial_dims)
     ccot_start = sinks + spatial_len
     ccot_end = ccot_start + num_ccot
 
-    # Compute cumulative products for coordinate conversion (row-major flattening)
-    # cumprods[i] = product of spatial_dims[i+1:] 
-    # For (H, W): cumprods = [W, 1] so row = idx // W, col = idx % W
-    # For (D1, D2, D3): cumprods = [D2*D3, D3, 1]
     cumprods_list = []
     for i in range(len(spatial_dims)):
-        prod = math.prod(spatial_dims[i+1:]) if i < len(spatial_dims) - 1 else 1
-        cumprods_list.append(prod)
-    cumprods = torch.tensor(cumprods_list, dtype=torch.long)
-    spatial_dims_tensor = torch.tensor(spatial_dims, dtype=torch.long)
+        forward_prod = math.prod(spatial_dims[i+1:]) if i < len(spatial_dims) - 1 else 1
+        backward_prod = math.prod(spatial_dims[:i]) if i > 0 else spatial_len
+        cumprods_list.append((forward_prod, backward_prod))
     
-    def idx_to_coords(idx):
-        """Convert flattened index (after sinks) to multi-dimensional coordinates.
-        Returns tensor of shape (num_dims, ...) where first dim is coordinate dimension."""
-        true_idx = idx - sinks
-        # Expand for broadcasting: (num_dims, 1) and (1, ...)
-        cumprods_expanded = cumprods.view(-1, *([1] * idx.dim()))
-        spatial_dims_expanded = spatial_dims_tensor.view(-1, *([1] * idx.dim()))
-        true_idx_expanded = true_idx.unsqueeze(0)
-        
-        # Compute all coordinates at once: (num_dims, ...)
-        coords = (true_idx_expanded // cumprods_expanded) % spatial_dims_expanded
-        return coords
+    def get_spatial_coords(idx):
+        true_coord = [(idx % b) // f for f, b in cumprods_list]
+        return true_coord
     
+    #Cache values so sliding window is easily compilable
+    cache = torch.stack([get_spatial_coords(i) for i in range(spatial_len)])
+    cache = cache.to(device)
+
     def sliding_window(b, h, q_idx, kv_idx):
+        #Checks for sink / ccot
         sink = kv_idx <= sinks - 1
         ccot_kv = (kv_idx >= ccot_start) & (kv_idx < ccot_end)
-        ccot_q = (q_idx >= spatial_len) & (q_idx < (spatial_len + num_ccot))
-
-        # Convert indices to coordinates: (num_dims, ...)
-        q_coords = idx_to_coords(q_idx)
-        kv_coords = idx_to_coords(kv_idx)
+        ccot_q = (q_idx >= spatial_len)
+        #Getting actual value
+        q_true = cache[torch.clamp(q_idx, 0, spatial_len - 1)]
+        kv_true = cache[torch.clamp(kv_idx - sinks, 0, spatial_len - 1)]
+        manhattan = (q_true - kv_true).abs().sum()
         
-        # Compute Manhattan distance (L1 norm) across all dimensions
-        diff = torch.abs(q_coords.float() - kv_coords.float()).sum(dim=0)
-        
-        window_mask = diff <= WINDOW_SIZE
-        # CCoT queries attend globally; CCoT keys are always visible.
-        return sink | ccot_kv | ccot_q | window_mask
+        return sink | ccot_kv | ccot_q | (manhattan <= window_size)
     
     return sliding_window
 
-def get_sliding_window_1d(sinks):
+def get_sliding_window_1d(sinks, window_size=5):
     """1D sliding window (kept for backward compatibility)."""
     def sliding_window(b, h, q_idx, kv_idx):
         sink = kv_idx <= sinks - 1
-        window_mask = (q_idx - (kv_idx - sinks)).abs() <= WINDOW_SIZE
+        window_mask = (q_idx - (kv_idx - sinks)).abs() <= window_size
         return window_mask | sink
     return sliding_window
 
@@ -115,7 +103,7 @@ class ConvAttn(nn.Module):
 #Multi-headed attention with different attention methods
 class MHA(nn.Module):
     def __init__(self, input_dim, output_dim, num_heads, attn_type = 'full', 
-                 qk_normalization = False, num_sinks=1, max_seq_len = 512):
+                 qk_normalization = False, num_sinks=1, max_seq_len = 512, local_radius=5):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -123,6 +111,7 @@ class MHA(nn.Module):
         self.head_dim = output_dim // num_heads
         self.attn_type = attn_type
         self.num_sinks = num_sinks
+        self.local_radius = local_radius
         assert output_dim % num_heads == 0, f"hidden_dim {output_dim} must be divisible by num_heads {num_heads}"
         
         self.qkv = nn.Linear(input_dim, output_dim * 3)            
@@ -160,13 +149,15 @@ class MHA(nn.Module):
         qkv = self.qkv(x)  # (B, ..., 3*D)
         
         num_ccot = ccot_tokens.shape[1]
+        q_ccot = k_ccot = v_ccot = None
         #Working with chain of thought
-        if ccot_tokens is not None:
+        if num_ccot > 0:
             qkv_ccot = self.qkv(ccot_tokens)
             q_ccot, k_ccot, v_ccot = qkv_ccot.chunk(3, dim = -1) #Each (I, D)
             q_ccot = q_ccot.reshape(B, num_ccot, self.num_heads, self.head_dim).transpose(1, 2)
             k_ccot = k_ccot.reshape(B, num_ccot, self.num_heads, self.head_dim).transpose(1, 2)
             v_ccot = v_ccot.reshape(B, num_ccot, self.num_heads, self.head_dim).transpose(1, 2)
+            q_ccot, k_ccot = self.q_norm(q_ccot), self.k_norm(k_ccot)
             
         q, k, v = qkv.chunk(3, dim=-1)  # Each: (B, ..., D)
         
@@ -181,6 +172,10 @@ class MHA(nn.Module):
         k = self.rope(k)
         
         q, k = self.q_norm(q), self.k_norm(k)
+        if q.dtype != v.dtype:
+            q = q.to(v.dtype)
+        if k.dtype != v.dtype:
+            k = k.to(v.dtype)
         q = q.reshape(B, self.num_heads, L, self.head_dim)
         k = k.reshape(B, self.num_heads, L, self.head_dim)
         v = v.reshape(B, self.num_heads, L, self.head_dim)
@@ -191,7 +186,7 @@ class MHA(nn.Module):
             k = torch.cat([sink_k, k], dim=2)
             v = torch.cat([sink_v, v], dim=2)
         #Shape is [B, N, S + L, D]
-        if ccot_tokens is not None:
+        if num_ccot > 0:
             q = torch.cat([q, q_ccot], dim = 2)
             k = torch.cat([k, k_ccot], dim = 2)
             v = torch.cat([v, v_ccot], dim = 2)
@@ -202,7 +197,7 @@ class MHA(nn.Module):
                 mask_key = (tuple(spatial_dims), int(self.num_sinks), int(num_ccot))
                 if mask_key not in self._mask_cache:
                     self._mask_cache[mask_key] = create_block_mask(
-                        get_sliding_window(self.num_sinks, spatial_dims, num_ccot),
+                        get_sliding_window(self.num_sinks, spatial_dims, k.device, num_ccot, self.local_radius),
                         B=None,
                         H=None,
                         Q_LEN=L + num_ccot,
@@ -226,10 +221,10 @@ class MHA(nn.Module):
             self._compute_attention_stats(q[:, :, :L, :], k, L)
             
         # Reshape back: (B, num_heads, L, head_dim) -> (B, L, num_heads, head_dim) -> (B, *spatial_dims, D)
-        ccot_tokens = out[:, :, L:, :].transpose(1, 2).reshape(B, num_ccot, self.output_dim)
-        out = out[:, :, :L, :] #:L is necessary for ccot tokens
-        out = out.transpose(1, 2).reshape(B, *spatial_dims, self.output_dim)
-        out = self.out_proj(out)
+        out = out.transpose(1, 2).reshape(B, -1, self.output_dim) #(B, L, D)
+        out = self.out_proj(out) 
+        ccot_tokens = out[:, L:, :]
+        out = out[:, :L, :].reshape(B, *spatial_dims, self.output_dim)
         return out, ccot_tokens
 
     def _compute_attention_stats(self, q, k, seq_len):
@@ -243,7 +238,7 @@ class MHA(nn.Module):
             mask = torch.zeros(seq_len, kv_len, device=attn_weights.device, dtype=torch.bool)
             mask[:, :self.num_sinks] = True
             seq_kv_idx = kv_idx[self.num_sinks:] - self.num_sinks
-            window_mask = (q_idx[:, None] - seq_kv_idx[None, :]).abs() <= WINDOW_SIZE
+            window_mask = (q_idx[:, None] - seq_kv_idx[None, :]).abs() <= self.local_radius
             mask[:, self.num_sinks:] = window_mask
             mask = mask[None, None, :, :]
             attn_weights = attn_weights.masked_fill(~mask, -torch.inf)
@@ -256,7 +251,7 @@ class AttentionBlock(nn.Module):
     def __init__(self, hidden_dim, lanes = 1,
                 injection_type = 'none', norm_type = 'peri', 
                 recall_inner = False, qk_normalization = False,
-                residual_method = 'add', attn_type='full', max_seq_len=None, num_sinks=0,
+                residual_method = 'add', attn_type='full', max_seq_len=None, num_sinks=0, local_radius=5,
                 post_relu = False):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -269,6 +264,7 @@ class AttentionBlock(nn.Module):
         self.attn_type = attn_type
         self.max_seq_len = max_seq_len
         self.num_sinks = num_sinks
+        self.local_radius = local_radius
         self.post_relu = nn.ReLU() if post_relu else nn.Identity()
         
         # For LSTM: register buffer to store cell state (will be reset each forward pass)
@@ -322,6 +318,7 @@ class AttentionBlock(nn.Module):
                 attn_type=self.attn_type,
                 qk_normalization=self.qk_normalization,
                 num_sinks=self.num_sinks,
+                local_radius=self.local_radius,
             )
                 
         self.mlp = nn.Sequential(
@@ -402,7 +399,7 @@ class AttentionBlock(nn.Module):
         
         def run_block(block_name, x, ccot_tokens):
             #Both x and ccot are [B, *, D]
-            shortcut_flat = torch.cat([x.reshape(B, -1, D), ccot_tokens], dim = 1)
+            shortcut_x, shortcut_ccot = x, ccot_tokens
             x, ccot_tokens = self.pre_norm_func(x), self.pre_norm_func(ccot_tokens)
             if self.recall_inner:
                 x = self.injection_func(x, h)
@@ -412,9 +409,9 @@ class AttentionBlock(nn.Module):
                 x, ccot_tokens = self.attn(x, ccot_tokens) 
             if block_name == 'mlp':
                 x, ccot_tokens = self.mlp(x), self.mlp(ccot_tokens)
-            update_flat = torch.cat([x.reshape(B, -1, D), ccot_tokens], dim = 1)
-            resid_flat = self.post_norm_func(self.residual_func(shortcut_flat, self.peri_norm_func(update_flat)))
-            x, ccot_tokens = resid_flat[:, :L, :].reshape(B, *spatial_dims, D), resid_flat[:, L:, :]
+            x = self.post_norm_func(self.residual_func(shortcut_x, self.peri_norm_func(x)))
+            if shortcut_ccot.size(1) > 0:
+                ccot_tokens = self.post_norm_func(self.residual_func(shortcut_ccot, self.peri_norm_func(ccot_tokens)))
             return x, ccot_tokens
         
         x, ccot_tokens = run_block('attn', x, ccot_tokens)

@@ -156,8 +156,10 @@ def get_output_for_prog_loss(inputs, max_iters, net, rand_method = 'basic'):
         
 
     if n > 0:
-        _, interim_thought = net(inputs, iters_to_do=n)
-        interim_thought = interim_thought.detach()
+        # These warm-up iterations are only for producing an initial state.
+        # Do not build autograd graphs for them.
+        with torch.no_grad():
+            _, interim_thought = net(inputs, iters_to_do=n)
     else:
         interim_thought = None
 
@@ -479,31 +481,29 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
         autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
         
         with autocast_context:
-            outputs_max_iters, _ = net(inputs, iters_to_do=max_iters)
-
-            # NaN detection in outputs
-            if torch.isnan(outputs_max_iters).any():
-                tqdm.write(f"NaN in outputs at batch {batch_idx}!")
-                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-                raise ValueError(f"NaN in outputs at epoch {epoch}, batch {batch_idx}")
-                
-            if alpha != 1:
-                outputs_max_iters = outputs_max_iters.view(outputs_max_iters.size(0),
-                                                           outputs_max_iters.size(1), -1)
-                loss_max_iters = criterion(outputs_max_iters, targets)
-            else:
-                loss_max_iters = torch.zeros_like(targets).float()
-
-            if alpha != 0:
-                if alpha == 1:
-                    outputs = outputs_max_iters.view(outputs_max_iters.size(0), outputs_max_iters.size(1), -1)
-                    k = max_iters
-                else:
-                    outputs, k = get_output_for_prog_loss(inputs, max_iters, net, rand_method)
-                    outputs = outputs.view(outputs.size(0), outputs.size(1), -1)
-                loss_progressive = criterion(outputs, targets)
-            else:
+            #alpha = 1 -> full prog, alpha = 0 -> full all
+            if alpha == 0:
                 loss_progressive = torch.zeros_like(targets).float()
+            else:
+                outputs, k = get_output_for_prog_loss(inputs, max_iters, net, rand_method)
+                outputs = outputs.flatten(start_dim=2)
+                loss_progressive = criterion(outputs, targets)
+                
+            if alpha == 1:
+                outputs_max_iters = outputs #Necessary for later predictions
+                loss_max_iters = torch.zeros_like(targets).float()
+            else:
+                outputs_max_iters, _ = net(inputs, iters_to_do=max_iters)
+                outputs_max_iters = outputs_max_iters.flatten(start_dim=2)
+                loss_max_iters = criterion(outputs_max_iters, targets)
+            
+
+
+            # NaN detection in loss
+            if torch.isnan(loss_max_iters).any() or torch.isnan(loss_progressive).any():
+                tqdm.write(f"NaN in loss at batch {batch_idx}!")
+                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
+                raise ValueError(f"NaN in loss at epoch {epoch}, batch {batch_idx}")
 
             if problem == "mazes":
                 loss_max_iters = (loss_max_iters * mask)
