@@ -15,7 +15,7 @@ LICHESS_PUZZLE_CSV = "lichess_db_puzzle.csv"
 
 
 def _loader_settings():
-    num_workers = min(16, max(1, os.cpu_count() or 1))
+    num_workers = min(6, max(1, os.cpu_count() or 1))
     return {"num_workers": num_workers, "pin_memory": torch.cuda.is_available(), "persistent_workers": num_workers > 0}
 
 

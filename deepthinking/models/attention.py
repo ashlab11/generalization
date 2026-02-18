@@ -8,6 +8,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from torchtune.modules import RotaryPositionalEmbeddings
 from .ropend import RoPENd
+import natten
 
 #TODO: make this sliding window really easy to understand 
 
@@ -32,8 +33,7 @@ def get_sliding_window(sinks, spatial_dims, device, num_ccot=0, window_size=5):
         return true_coord
     
     #Cache values so sliding window is easily compilable
-    cache = torch.stack([get_spatial_coords(i) for i in range(spatial_len)])
-    cache = cache.to(device)
+    cache = torch.tensor([get_spatial_coords(i) for i in range(spatial_len)], device=device)
 
     def sliding_window(b, h, q_idx, kv_idx):
         #Checks for sink / ccot
@@ -43,7 +43,7 @@ def get_sliding_window(sinks, spatial_dims, device, num_ccot=0, window_size=5):
         #Getting actual value
         q_true = cache[torch.clamp(q_idx, 0, spatial_len - 1)]
         kv_true = cache[torch.clamp(kv_idx - sinks, 0, spatial_len - 1)]
-        manhattan = (q_true - kv_true).abs().sum()
+        manhattan = (q_true - kv_true).abs().sum(dim = -1)
         
         return sink | ccot_kv | ccot_q | (manhattan <= window_size)
     
@@ -190,7 +190,6 @@ class MHA(nn.Module):
             q = torch.cat([q, q_ccot], dim = 2)
             k = torch.cat([k, k_ccot], dim = 2)
             v = torch.cat([v, v_ccot], dim = 2)
-        
         match self.attn_type:
             case 'local':
                 # Cache by full spatial signature, to work with changing numbers of num_ccot
@@ -202,9 +201,12 @@ class MHA(nn.Module):
                         H=None,
                         Q_LEN=L + num_ccot,
                         KV_LEN=L + self.num_sinks + num_ccot,
-                        _compile=True
+                        _compile=True, 
+                        BLOCK_SIZE=32
                     )
-                out = self.flex_attention_compiled(q, k, v, block_mask=self._mask_cache[mask_key])
+                
+                kernel_opts = {"BLOCK_M": 32, "BLOCK_N": 32}
+                out = self.flex_attention_compiled(q, k, v, block_mask=self._mask_cache[mask_key], kernel_options=kernel_opts)
             case 'full':
                 use_flash = q.is_cuda and q.dtype in (torch.float16, torch.bfloat16)
                 backend = SDPBackend.FLASH_ATTENTION if use_flash else SDPBackend.MATH

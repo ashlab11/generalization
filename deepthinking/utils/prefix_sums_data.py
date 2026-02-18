@@ -43,7 +43,7 @@ def prepare_prefix_loader(train_batch_size, test_batch_size, train_data, test_da
                                                       int(len(dataset) - train_split)],
                                                      generator=torch.Generator().manual_seed(42))
 
-    num_workers = min(16, max(1, os.cpu_count() or 1))
+    num_workers = min(6, max(1, os.cpu_count() or 1))
     loader_settings = {"num_workers": num_workers, "pin_memory": torch.cuda.is_available(), "persistent_workers": num_workers > 0}
     trainloader = data.DataLoader(trainset, batch_size=train_batch_size, shuffle=shuffle, drop_last=True, **loader_settings)
     testloader = data.DataLoader(testset, batch_size=test_batch_size, shuffle=False, drop_last=False, **loader_settings)

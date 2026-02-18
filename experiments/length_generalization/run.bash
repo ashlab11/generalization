@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=length_gen
 #SBATCH -o experiments/length_generalization/%A_%a.out
-#SBATCH --time=4:00:00
+#SBATCH --time=12:00:00
 #SBATCH --mem=64G
 #SBATCH -n 6
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH --array=7-23:2
+#SBATCH --array=15-23:2
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=b200
 #SBATCH --exclude=gpu4002
