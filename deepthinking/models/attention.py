@@ -189,12 +189,15 @@ class MHA(nn.Module):
                     q = torch.cat([q, q_ccot], dim = 2)
                     k = torch.cat([k, k_ccot], dim = 2)
                     v = torch.cat([v, v_ccot], dim = 2)
-                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                use_flash = q.is_cuda and q.dtype in (torch.float16, torch.bfloat16)
+                backend = SDPBackend.FLASH_ATTENTION if use_flash else SDPBackend.MATH
+                with sdpa_kernel(backend):
                     out = F.scaled_dot_product_attention(q, k, v) #[B, N, L + C, H]
                 
-                #Compute attention stats if 1D
-                if len(self.shape) == 1:
-                    self._compute_attention_stats(q[:, :, :L, :], k)
+                # Compute attention stats only when explicitly enabled by diagnostics.
+                if self._compute_attn_stats and len(self.shape) == 1:
+                    with torch.no_grad():
+                        self._compute_attention_stats(q[:, :, :L, :], k)
                 out = out.transpose(1, 2).reshape(B, -1, self.output_dim)
                 out = self.out_proj(out)
                 ccot_tokens = out[:, L:, :]
