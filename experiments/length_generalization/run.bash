@@ -6,7 +6,7 @@
 #SBATCH -n 6
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH --array=15-23:2
+#SBATCH --array=0-22:2
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=b200
 #SBATCH --exclude=gpu4002
@@ -37,7 +37,7 @@ case "$MODEL_IDX" in
     TEST_LOW=1
     TEST_HIGH=1
     INJECTION_TYPE="none"
-    LOCAL_RADIUS=5
+    KERNEL_SIZE=11
     ;;
   1)
     ATTN_TYPE="full"
@@ -46,7 +46,7 @@ case "$MODEL_IDX" in
     TEST_LOW=1
     TEST_HIGH=250
     INJECTION_TYPE="linear"
-    LOCAL_RADIUS=5
+    KERNEL_SIZE=11
     ;;
   2)
     ATTN_TYPE="local"
@@ -55,7 +55,7 @@ case "$MODEL_IDX" in
     TEST_LOW=1
     TEST_HIGH=250
     INJECTION_TYPE="linear"
-    LOCAL_RADIUS=5
+    KERNEL_SIZE=11
     ;;
   3)
     ATTN_TYPE="local"
@@ -65,9 +65,9 @@ case "$MODEL_IDX" in
     TEST_HIGH=250
     INJECTION_TYPE="linear"
     if [ "$PROBLEM" = "prefix_sums" ]; then
-      LOCAL_RADIUS=31
+      KERNEL_SIZE=31
     else
-      LOCAL_RADIUS=16
+      KERNEL_SIZE=9
     fi
     ;;
 esac
@@ -101,7 +101,7 @@ python train_model.py \
     problem.model.norm_type=post \
     problem.model.attn_type=$ATTN_TYPE \
     problem.model.num_sinks=1 \
-    problem.model.local_radius=$LOCAL_RADIUS \
+    problem.model.kernel_size=$KERNEL_SIZE \
     problem.model.injection_type=$INJECTION_TYPE \
     problem.model.recall_inner=false \
     problem.model.residual_method=add \
@@ -110,4 +110,4 @@ python train_model.py \
     problem.model.ccot=none \
     profile=false \
     compile=false \
-    +sweep_name=length_generalization
+    +sweep_name=length_generalization_2

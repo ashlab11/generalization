@@ -25,7 +25,7 @@ class DTTransformer(nn.Module):
                  injection_type='concat', norm_type='peri', norm_before_head=True,
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
-                 in_channels = 1, out_channels = 2, num_sinks=0, local_radius=5, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
+                 in_channels = 1, out_channels = 2, num_sinks=0, kernel_size=5, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
                  noise_prob = 0.0, noise_scale = 0.01, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -65,7 +65,7 @@ class DTTransformer(nn.Module):
                                            residual_method = residual_method,
                                            attn_type = attn_type,
                                            num_sinks=num_sinks,
-                                           local_radius=local_radius,
+                                           kernel_size=kernel_size,
                                            post_relu=post_relu
                                            ) 
                                            for _ in range(num_blocks)])

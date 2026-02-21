@@ -56,7 +56,7 @@ class ConvAttn(nn.Module):
 #Multi-headed attention with different attention methods
 class MHA(nn.Module):
     def __init__(self, input_dim, output_dim, num_heads, attn_type = 'full', 
-                 qk_normalization = False, num_sinks=1, max_seq_len = 512, local_radius=5):
+                 qk_normalization = False, num_sinks=1, max_seq_len = 512, kernel_size=5):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -64,7 +64,7 @@ class MHA(nn.Module):
         self.head_dim = output_dim // num_heads
         self.attn_type = attn_type
         self.num_sinks = num_sinks
-        self.local_radius = local_radius
+        self.kernel_size = kernel_size
         assert output_dim % num_heads == 0, f"hidden_dim {output_dim} must be divisible by num_heads {num_heads}"
         
         self.qkv = nn.Linear(input_dim, output_dim * 3)            
@@ -130,48 +130,66 @@ class MHA(nn.Module):
             case 'local':
                 #Two steps: first get non-CoT, then get CoT, add them together.
                 #[B, N, ..., D] -> [B, ..., N, D]
-                q = q.permute(0, *range(2, len(spatial_dims) + 1), 1, -1)
-                k = k.permute(0, *range(2, len(spatial_dims) + 1), 1, -1)
-                v = v.permute(0, *range(2, len(spatial_dims) + 1), 1, -1)
+                nspatial = len(spatial_dims)
+                q = q.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
+                k = k.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
+                v = v.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
                 attn_funcs = [natten.na1d, natten.na2d, natten.na3d]
-                attn_func = attn_funcs[len(spatial_dims) - 1] #Get the correct attention dim
-                k_sink = None if self.num_sinks == 0 else self.sink_k.unsqueeze(0).expand(B, -1, -1, -1)
-                v_sink = None if self.num_sinks == 0 else self.sink_v.unsqueeze(0).expand(B, -1, -1, -1)
-                out = attn_func(q, k, v, kernel_size = self.local_radius, additional_keys = k_sink,
-                                        additional_values = v_sink)
-                out = out.reshape(B, *spatial_dims, self.output_dim)
-                out = self.out_proj(out)
+                attn_func = attn_funcs[nspatial - 1] #Get the correct attention dim
                 
-                #CCOT
-                if (L, num_ccot) not in self._mask_cache.keys() and num_ccot > 0:
-                    self._mask_cache[(L, num_ccot)] = create_block_mask(cot_global(L), None, None, Q_LEN = L + num_ccot, 
-                                                                        KV_LEN = L + num_ccot, _compile = True)
+                #Additional KV: CoT + sinks 
+                add_k = []
+                add_v = []
+                
+                if self.num_sinks > 0:
+                    #Natten wants [B, L, N, D] - keys start as [L, N, D]
+                    add_k.append(self.sink_k.unsqueeze(0).expand(B, -1, -1, -1).to(k.dtype))
+                    add_v.append(self.sink_v.unsqueeze(0).expand(B, -1, -1, -1).to(v.dtype))
                 if num_ccot > 0:
-                    q = q.reshape(B, self.num_heads, -1, self.head_dim)
-                    k = k.reshape(B, self.num_heads, -1, self.head_dim)
-                    v = v.reshape(B, self.num_heads, -1, self.head_dim)
-                    ccot_output = self._flex_attention_compiled(q, k, v, block_mask = self._mask_cache[(L, num_ccot)]) #[B, N, L, D]
-                    ccot_full_dim = ccot_output.transpose(1, 2).reshape(B, L + num_ccot, self.output_dim) #[B, L + C, D]
-                    ccot_full_dim = self.out_proj(ccot_full_dim)
-                    ccot_tokens = ccot_full_dim[:, L:, :]
-                    rest_output = ccot_full_dim[:, :L, :]
-                    rest_output = rest_output.reshape(B, *spatial_dims, self.output_dim)
-                    out = out + rest_output
+                    # k_ccot/v_ccot are (B, H, L, D) -- natten wants (B, L, H, D)
+                    add_k.append(k_ccot.transpose(1, 2).contiguous())
+                    add_v.append(v_ccot.transpose(1, 2).contiguous())
+                
+                additional_k = torch.cat(add_k, dim=1) if add_k else None
+                additional_v = torch.cat(add_v, dim=1) if add_v else None
+                    
+                out = attn_func(q, k, v, kernel_size = self.kernel_size, additional_keys = additional_k,
+                                        additional_values = additional_v)
+                out = out.reshape(B, *spatial_dims, self.output_dim)
+                out = self.out_proj(out) #Result for tokens seeing from sinks and CCOT
+                
+                #Now getting CCOT looking from tokens
+                if num_ccot > 0:
+                    #K and V need to be [sinks, tokens, ccot], Q is just [ccot]
+                    #Everything needs to be [B, H, L, D]
+                    #Already have q_ccot, k_ccot, v_ccot from earlier
+                    add_k.append(k.reshape(B, -1, self.num_heads, self.head_dim))
+                    add_v.append(v.reshape(B, -1, self.num_heads, self.head_dim))
+                    add_k = torch.cat(add_k, dim = 1)
+                    add_v = torch.cat(add_v, dim = 1)
+                    #At this point K/V are shape [B, L, H, D]
+                    add_k = add_k.transpose(1, 2)
+                    add_v = add_v.transpose(1, 2)
+                    
+                    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                        ccot_tokens = F.scaled_dot_product_attention(q_ccot, add_k, add_v)
+                    ccot_tokens = ccot_tokens.transpose(1, 2).reshape(B, num_ccot, self.output_dim)
+                    ccot_tokens = self.out_proj(ccot_tokens)
     
             case 'full':
                 q = q.reshape(B, self.num_heads, L, self.head_dim)
                 k = k.reshape(B, self.num_heads, L, self.head_dim)
                 v = v.reshape(B, self.num_heads, L, self.head_dim)
                 if self.num_sinks > 0:
-                    k = torch.cat([self.sink_k, k], dim = 2)
-                    v = torch.cat([self.sink_v, v], dim = 2)
+                    sink_k = self.sink_k.unsqueeze(0).expand(B, -1, -1, -1).transpose(1, 2).to(k.dtype)
+                    sink_v = self.sink_v.unsqueeze(0).expand(B, -1, -1, -1).transpose(1, 2).to(v.dtype)
+                    k = torch.cat([sink_k, k], dim = 2)
+                    v = torch.cat([sink_v, v], dim = 2)
                 if num_ccot > 0:
                     q = torch.cat([q, q_ccot], dim = 2)
                     k = torch.cat([k, k_ccot], dim = 2)
                     v = torch.cat([v, v_ccot], dim = 2)
-                use_flash = q.is_cuda and q.dtype in (torch.float16, torch.bfloat16)
-                backend = SDPBackend.FLASH_ATTENTION if use_flash else SDPBackend.MATH
-                with sdpa_kernel(backend):
+                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                     out = F.scaled_dot_product_attention(q, k, v) #[B, N, L + C, H]
                 
                 #Compute attention stats if 1D
@@ -197,7 +215,7 @@ class AttentionBlock(nn.Module):
     def __init__(self, hidden_dim, lanes = 1,
                 injection_type = 'none', norm_type = 'peri', 
                 recall_inner = False, qk_normalization = False,
-                residual_method = 'add', attn_type='full', max_seq_len=None, num_sinks=0, local_radius=5,
+                residual_method = 'add', attn_type='full', max_seq_len=None, num_sinks=0, kernel_size=5,
                 post_relu = False):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -210,7 +228,7 @@ class AttentionBlock(nn.Module):
         self.attn_type = attn_type
         self.max_seq_len = max_seq_len
         self.num_sinks = num_sinks
-        self.local_radius = local_radius
+        self.kernel_size = kernel_size
         self.post_relu = nn.ReLU() if post_relu else nn.Identity()
         
         # For LSTM: register buffer to store cell state (will be reset each forward pass)
@@ -264,7 +282,7 @@ class AttentionBlock(nn.Module):
                 attn_type=self.attn_type,
                 qk_normalization=self.qk_normalization,
                 num_sinks=self.num_sinks,
-                local_radius=self.local_radius,
+                kernel_size=self.kernel_size,
             )
                 
         self.mlp = nn.Sequential(
