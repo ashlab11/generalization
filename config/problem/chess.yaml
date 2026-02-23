@@ -12,3 +12,4 @@ max_test_samples: 10000
 model:
   in_channels: 12
   out_channels: 2
+  spatial_dims: 2

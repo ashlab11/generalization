@@ -26,7 +26,7 @@ class DTTransformer(nn.Module):
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
                  in_channels = 1, out_channels = 2, num_sinks=0, kernel_size=5, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
-                 noise_prob = 0.0, noise_scale = 0.01, **kwargs):
+                 noise_prob = 0.0, noise_scale = 0.01, *, spatial_dims, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
@@ -34,6 +34,8 @@ class DTTransformer(nn.Module):
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels)
         self.ccot = ccot
+        if spatial_dims not in (1, 2, 3):
+            raise ValueError(f"spatial_dims must be 1, 2, or 3; got {spatial_dims}")
         
         assert self.ccot == 'none' or residual_method != 'lstm', "lstm cannot be used with continuous chain of thought"
         assert self.ccot == 'none' or lanes == 1, 'good luck getting ccot to work with mhc'
@@ -66,7 +68,8 @@ class DTTransformer(nn.Module):
                                            attn_type = attn_type,
                                            num_sinks=num_sinks,
                                            kernel_size=kernel_size,
-                                           post_relu=post_relu
+                                           post_relu=post_relu,
+                                           spatial_dims=spatial_dims
                                            ) 
                                            for _ in range(num_blocks)])
         self.head = nn.Sequential(

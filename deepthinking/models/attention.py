@@ -12,15 +12,20 @@ import natten
 
 #Convolutional attention
 class ConvAttn(nn.Module):
-    def __init__(self, input_dim, output_dim, kernel_size = 3):
+    def __init__(self, input_dim, output_dim, kernel_size = 3, *, spatial_dims):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.is_setup = False
         self.lin = nn.Linear(input_dim, output_dim)
         self.kernel_size = kernel_size
+        self.setup(spatial_dims)
     
     def setup(self, dimensions, device=None):
+        if self.is_setup:
+            return
+        if dimensions not in (1, 2, 3):
+            raise ValueError(f"spatial_dims must be 1, 2, or 3; got {dimensions}")
         #Sets up on first try
         match dimensions:
             case 1:
@@ -40,10 +45,6 @@ class ConvAttn(nn.Module):
         self.is_setup = True
         
     def forward(self, x, ccot_tokens):
-        #Lazy initialization, ccot_tokens used only for backwards compatibility
-        if not self.is_setup:
-            self.setup(len(x.shape[1:-1]), device=x.device)
-
         #[B, ..., 2D]
         x = F.relu(self.lin(x)) #[B, ..., D]
         x = x.permute(0, -1, *range(1, x.dim() - 1)) #[B, D, ...]
@@ -237,7 +238,7 @@ class AttentionBlock(nn.Module):
                 injection_type = 'none', norm_type = 'peri', 
                 recall_inner = False, qk_normalization = False,
                 residual_method = 'add', attn_type='full', max_seq_len=None, num_sinks=0, kernel_size=5,
-                post_relu = False):
+                post_relu = False, *, spatial_dims):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.lanes = lanes
@@ -295,7 +296,7 @@ class AttentionBlock(nn.Module):
                 raise ValueError(f"Invalid injection type: {self.injection_type}. Must be 'add', 'linear', 'concat', or 'none'")
             
         if self.attn_type == 'conv':
-            self.attn = ConvAttn(input_hidden_dim, hidden_dim, kernel_size=kernel_size)
+            self.attn = ConvAttn(input_hidden_dim, hidden_dim, kernel_size=kernel_size, spatial_dims=spatial_dims)
         else:
             self.attn = MHA(
                 input_hidden_dim, hidden_dim,

@@ -12,7 +12,7 @@
 
 source .venv/bin/activate
 
-PROBLEM="prefix_sums"
+PROBLEM="mazes"
 LR="0.0003"
 ATTN_TYPE="conv"
 MAX_ITERS=30
@@ -25,7 +25,7 @@ else
   TRAIN_BATCH_SIZE=100
 fi
 
-EXP_NAME="cnn_${PROBLEM}_lr${LR}_prefix"
+EXP_NAME="cnn_${PROBLEM}_lr${LR}_mazes"
 
 python train_model.py \
     name=length_generalization \

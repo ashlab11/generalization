@@ -67,7 +67,7 @@ def main(cfg: DictConfig):
 
     net, start_epoch, optimizer_state_dict = dt.utils.load_model_from_checkpoint(cfg.problem.name,
                                                                                  cfg.problem.model,
-                                                                                 device)
+                                                                                 device)        
     if compile_mode:
         if isinstance(net, torch.nn.DataParallel):
             net.module = torch.compile(net.module, fullgraph=False, dynamic=False, mode="reduce-overhead")
