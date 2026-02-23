@@ -6,7 +6,7 @@
 #SBATCH -n 6
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH --array=12,14,16
+#SBATCH --array=13,15,17,19
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=b200
 #SBATCH --exclude=gpu4002
@@ -78,7 +78,7 @@ else
   TRAIN_BATCH_SIZE=100
 fi
 
-EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_no_sinks"
+EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_prog"
 
 python train_model.py \
     name=length_generalization \

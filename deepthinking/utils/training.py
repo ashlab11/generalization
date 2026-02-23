@@ -152,14 +152,10 @@ def get_output_for_prog_loss(inputs, max_iters, net, rand_method = 'basic'):
                 n = k
                 break
         k = randrange(1, 15)
-        
-        
 
     if n > 0:
-        # These warm-up iterations are only for producing an initial state.
-        # Do not build autograd graphs for them.
-        with torch.no_grad():
-            _, interim_thought = net(inputs, iters_to_do=n)
+        _, interim_thought = net(inputs, iters_to_do=n)
+        interim_thought = interim_thought.detach()
     else:
         interim_thought = None
 

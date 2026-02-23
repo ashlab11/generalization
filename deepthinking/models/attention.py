@@ -12,16 +12,13 @@ import natten
 
 #Convolutional attention
 class ConvAttn(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim, kernel_size = 3):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.is_setup = False
         self.lin = nn.Linear(input_dim, output_dim)
-        self.conv1 = nn.Conv1d(output_dim, output_dim, kernel_size=3,
-                               stride=1, padding=1, bias=False)
-        self.conv2 = nn.Conv1d(output_dim, output_dim, kernel_size=3,
-                               stride=1, padding=1, bias=False)
+        self.kernel_size = kernel_size
     
     def setup(self, dimensions, device=None):
         #Sets up on first try
@@ -33,9 +30,9 @@ class ConvAttn(nn.Module):
             case 3: 
                 conv_func = nn.Conv3d
         
-        self.conv1 = conv_func(self.output_dim, self.output_dim, kernel_size=3,
+        self.conv1 = conv_func(self.output_dim, self.output_dim, kernel_size=self.kernel_size,
                                stride=1, padding=1, bias=False)
-        self.conv2 = conv_func(self.output_dim, self.output_dim, kernel_size=3,
+        self.conv2 = conv_func(self.output_dim, self.output_dim, kernel_size=self.kernel_size,
                                stride=1, padding=1, bias=False)
         if device is not None:
             self.conv1 = self.conv1.to(device)
@@ -152,9 +149,30 @@ class MHA(nn.Module):
                 
                 additional_k = torch.cat(add_k, dim=1) if add_k else None
                 additional_v = torch.cat(add_v, dim=1) if add_v else None
+                
+                # Optional NATTEN tuning for Blackwell (B200). Falls back automatically otherwise.
+                natten_kwargs = {}
+                if q.is_cuda and torch.cuda.get_device_capability(q.device) in {(10, 0), (10, 3)}:
+                    natten_kwargs["backend"] = "blackwell-fna"
+                    natten_kwargs["run_persistent_kernel"] = True
+                    natten_kwargs["attention_kwargs"] = {
+                        "backend": "blackwell-fmha",
+                        "run_persistent_kernel": True,
+                    }
+                    match nspatial:
+                        case 1:
+                            natten_kwargs['q_tile_shape'] = (16, 16)
+                            natten_kwargs['kv_tile_shape'] = (8, 16)
+                            natten_kwargs['backward_q_tile_shape'] = (16, 8)
+                            natten_kwargs['backward_kv_tile_shape'] = (8, 16)
+                        case 2:
+                            natten_kwargs['q_tile_shape'] = (256,)
+                            natten_kwargs['kv_tile_shape'] = (128,)
+                            natten_kwargs['backward_q_tile_shape'] = (128,)
+                            natten_kwargs['backward_kv_tile_shape'] = (128,)
                     
                 out = attn_func(q, k, v, kernel_size = self.kernel_size, additional_keys = additional_k,
-                                        additional_values = additional_v)
+                                        additional_values = additional_v, **natten_kwargs)
                 out = out.reshape(B, *spatial_dims, self.output_dim)
                 out = self.out_proj(out) #Result for tokens seeing from sinks and CCOT
                 
@@ -277,7 +295,7 @@ class AttentionBlock(nn.Module):
                 raise ValueError(f"Invalid injection type: {self.injection_type}. Must be 'add', 'linear', 'concat', or 'none'")
             
         if self.attn_type == 'conv':
-            self.attn = ConvAttn(input_hidden_dim, hidden_dim)
+            self.attn = ConvAttn(input_hidden_dim, hidden_dim, kernel_size=kernel_size)
         else:
             self.attn = MHA(
                 input_hidden_dim, hidden_dim,
