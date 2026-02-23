@@ -78,7 +78,7 @@ else
   TRAIN_BATCH_SIZE=100
 fi
 
-EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_prog"
+EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_soft"
 
 python train_model.py \
     name=length_generalization \
@@ -90,7 +90,7 @@ python train_model.py \
     problem.hyp.weight_decay=0.01 \
     problem.hyp.lr=$LR \
     problem.hyp.use_amp=true \
-    problem.hyp.train_mode=progressive \
+    problem.hyp.train_mode=softmin \
     problem.hyp.rand_method=basic \
     problem.model.max_iters=$MAX_ITERS \
     problem.model.num_blocks=$NUM_BLOCKS \
@@ -100,7 +100,7 @@ python train_model.py \
     problem.model.hidden_dim=256 \
     problem.model.norm_type=post \
     problem.model.attn_type=$ATTN_TYPE \
-    problem.model.num_sinks=0 \
+    problem.model.num_sinks=2 \
     problem.model.kernel_size=$KERNEL_SIZE \
     problem.model.injection_type=$INJECTION_TYPE \
     problem.model.recall_inner=false \

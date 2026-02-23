@@ -162,15 +162,15 @@ class MHA(nn.Module):
                     }
                     match nspatial:
                         case 1:
-                            natten_kwargs['q_tile_shape'] = (16, 16)
-                            natten_kwargs['kv_tile_shape'] = (8, 16)
-                            natten_kwargs['backward_q_tile_shape'] = (16, 8)
-                            natten_kwargs['backward_kv_tile_shape'] = (8, 16)
-                        case 2:
                             natten_kwargs['q_tile_shape'] = (256,)
                             natten_kwargs['kv_tile_shape'] = (128,)
                             natten_kwargs['backward_q_tile_shape'] = (128,)
                             natten_kwargs['backward_kv_tile_shape'] = (128,)
+                        case 2:
+                            natten_kwargs['q_tile_shape'] = (16, 16)
+                            natten_kwargs['kv_tile_shape'] = (8, 16)
+                            natten_kwargs['backward_q_tile_shape'] = (16, 8)
+                            natten_kwargs['backward_kv_tile_shape'] = (8, 16)
                     
                 out = attn_func(q, k, v, kernel_size = self.kernel_size, additional_keys = additional_k,
                                         additional_values = additional_v, **natten_kwargs)
