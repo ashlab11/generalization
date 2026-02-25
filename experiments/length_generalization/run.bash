@@ -17,7 +17,7 @@ IDX=$SLURM_ARRAY_TASK_ID
 
 PROBLEMS=("prefix_sums" "mazes")
 LRS=("0.0001" "0.0003" "0.001")
-MODEL_NAMES=("fixed15_full" "recurrent_full" "recurrent_local_r5" "recurrent_local_rbig")
+MODEL_NAMES=("fixed15_full" "recurrent_full" "recurrent_local_r3" "recurrent_local_rbig")
 
 PROBLEM_IDX=$((IDX % 2))
 IDX=$((IDX / 2))
@@ -53,9 +53,9 @@ case "$MODEL_IDX" in
     NUM_BLOCKS=1
     MAX_ITERS=30
     TEST_LOW=1
-    TEST_HIGH=500
+    TEST_HIGH=250
     INJECTION_TYPE="linear"
-    KERNEL_SIZE=3
+    KERNEL_SIZE=5
     ;;
   3)
     ATTN_TYPE="local"
@@ -78,7 +78,7 @@ else
   TRAIN_BATCH_SIZE=100
 fi
 
-EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_nosink"
+EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_pad"
 
 python train_model.py \
     name=length_generalization \
@@ -98,17 +98,19 @@ python train_model.py \
     problem.hyp.train_batch_size=$TRAIN_BATCH_SIZE \
     problem.model.test_iterations.high=$TEST_HIGH \
     problem.model.hidden_dim=256 \
-    problem.model.norm_type=post \
+    problem.model.norm_type=peri \
     problem.model.attn_type=$ATTN_TYPE \
     problem.model.num_sinks=0 \
     problem.model.velocity=0 \
     problem.model.kernel_size=$KERNEL_SIZE \
     problem.model.injection_type=$INJECTION_TYPE \
     problem.model.recall_inner=false \
-    problem.model.residual_method=add \
+    problem.model.residual_method=gru \
+    problem.model.local_attn_pad=true \
     +problem.model.qk_normalization=true \
     problem.model.init_method=default \
-    problem.hyp.val_period=50 \
+    problem.hyp.val_period=10 \
+    problem.hyp.full_only_hard=true \
     problem.model.ccot=none \
     profile=false \
     compile=false \

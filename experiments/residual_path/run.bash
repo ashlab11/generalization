@@ -37,7 +37,7 @@ NORM_TYPE=${NORM_TYPES[$RESIDUAL_IDX]}
 LR=${LRS[$LR_IDX]}
 
 
-EXP_NAME="trans_${RESIDUAL_NAME}_lr${LR}_seed${SEED}"
+EXP_NAME="conv_${RESIDUAL_NAME}_lr${LR}_seed${SEED}"
 
 python train_model.py \
     name=residual_path_ablation \
@@ -57,12 +57,13 @@ python train_model.py \
     problem.model.kernel_size=3 \
     problem.model.hidden_dim=256 \
     problem.model.norm_type="$NORM_TYPE" \
-    problem.model.attn_type=local \
+    problem.model.attn_type=conv \
     problem.model.num_sinks=0 \
     problem.model.injection_type=linear \
     problem.model.recall_inner=false \
     problem.model.residual_method="$RESIDUAL_METHOD" \
     +problem.model.qk_normalization=true \
     problem.model.init_method=default \
+    problem.hyp.full_only_hard=true \
     problem.model.ccot=none \
     +sweep_name=residual_path_ablation_3

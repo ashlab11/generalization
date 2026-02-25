@@ -9,6 +9,7 @@ recall_inner: false
 attn_type: local
 num_sinks: 0
 kernel_size: 5
+local_attn_pad: false
 hidden_dropout: 0
 init_method: default
 max_iters: 30

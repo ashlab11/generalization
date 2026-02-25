@@ -25,8 +25,8 @@ class DTTransformer(nn.Module):
                  injection_type='concat', norm_type='peri', norm_before_head=True,
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
-                 in_channels = 1, out_channels = 2, num_sinks=0, kernel_size=5, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
-                 noise_prob = 0.0, noise_scale = 0.01, velocity = 0, *, spatial_dims, **kwargs):
+                 in_channels = 1, out_channels = 2, num_sinks=0, kernel_size=5, local_attn_pad=False, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
+                 noise_prob = 0.0, noise_scale = 0.01, velocity = 0, *, spatial_dims, compile = False, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
@@ -35,6 +35,10 @@ class DTTransformer(nn.Module):
         self.out_channels = int(out_channels)
         self.ccot = ccot
         self.velocity = velocity
+        self.compile = compile
+        self.attn_type = attn_type
+        self.kernel_size = kernel_size
+        self.local_attn_pad = bool(local_attn_pad)
         if spatial_dims not in (1, 2, 3):
             raise ValueError(f"spatial_dims must be 1, 2, or 3; got {spatial_dims}")
         
@@ -47,7 +51,8 @@ class DTTransformer(nn.Module):
         assert not (ccot == 'iterative' and attn_type == 'local'), "iterative ccot currently doesn't work with local attn"
         assert ccot == 'none' or attn_type != 'conv', "conv doesn't work with ccot (dimension mismatch)"
         assert velocity == 0 or (norm_type in ['peri', 'pre'] and residual_method == 'add'), 'velocity requires strictly additive residual updates'
-        
+        assert not (self.compile and ccot == 'iterative'), "can't use compilation with ccot"
+               
         match self.ccot:
             case 'none':
                 self.register_buffer('ccot_tokens', torch.empty(0, hidden_dim)) #I, D
@@ -70,6 +75,7 @@ class DTTransformer(nn.Module):
                                            attn_type = attn_type,
                                            num_sinks=num_sinks,
                                            kernel_size=kernel_size,
+                                           local_attn_pad=local_attn_pad,
                                            post_relu=post_relu,
                                            spatial_dims=spatial_dims
                                            ) 
@@ -112,6 +118,26 @@ class DTTransformer(nn.Module):
                         reset_ema_buffers(c)
             self.reset = reset_ema_buffers
         
+    def _single_iter_compilable(self, initial_thought, interim_thought):
+        #We deal with spatial problems on the inside. Model receives interim_thought and initial_thought as [B, ..., D]
+            prev_interim = interim_thought
+            
+            #Add noise
+            if self.noise_prob > 0.0 and torch.rand((), device=interim_thought.device) < self.noise_prob:
+                scale = self.noise_scale * (interim_thought.detach().std() + 1e-6)
+                interim_thought = interim_thought + torch.randn_like(interim_thought) * scale
+            
+            #CORE BLOCKS
+            for block in self.recur_blocks:
+                interim_thought, ccot_tokens = block(interim_thought, initial_thought, ccot_tokens)
+
+            #Velocity designed to avoid early convergence / falling into local minima  
+            if self.velocity > 0:
+                velocity = self.velocity * velocity + (interim_thought - prev_interim)
+                interim_thought = prev_interim + velocity
+            
+            return interim_thought
+    
     def forward(self, x, iters_to_do, interim_thought=None, return_all = False, **kwargs):
         ccot_tokens = self.ccot_tokens.unsqueeze(0).repeat(x.shape[0], 1, 1) #[B, I, D]
         
@@ -122,6 +148,11 @@ class DTTransformer(nn.Module):
         elif x.dim() == 2:
             # (B, L) -> (B, L, 1)
             x = x.unsqueeze(-1)
+        nspatial = x.dim() - 2
+        pad = self.kernel_size // 2 if self.attn_type == 'local' and self.local_attn_pad else 0
+        if pad > 0:
+            pad_tuple = (pad, pad) * nspatial
+            x = F.pad(x.movedim(-1, 1), pad_tuple).movedim(1, -1)
 
         initial_thought = self.projection(x)
         #initial_thought = self.init_norm(initial_thought)
@@ -130,6 +161,8 @@ class DTTransformer(nn.Module):
             interim_thought = initial_thought
         elif interim_thought.dim() >= 3 and interim_thought.size(1) == self.hidden_dim:
             interim_thought = interim_thought.permute(0, *range(2, interim_thought.dim()), 1)
+        if pad > 0:
+            interim_thought = F.pad(interim_thought.movedim(-1, 1), pad_tuple).movedim(1, -1)
         
         if self.is_mhc and interim_thought.dim() >= 3:
             interim_thought = interim_thought.unsqueeze(0).repeat(self.lanes, *([1] * interim_thought.dim()))
@@ -138,7 +171,8 @@ class DTTransformer(nn.Module):
         spatial_dims = x.shape[1:-1]  # All dims except batch and channel
         needs_all_outputs = return_all or not self.training
         if needs_all_outputs:
-            all_outputs = torch.zeros((x.size(0), iters_to_do, self.out_channels, *spatial_dims)).to(x.device)
+            all_outputs = torch.empty((x.size(0), iters_to_do, self.out_channels, *spatial_dims),
+                                      device=x.device, dtype=initial_thought.dtype)
         track_norm_ratio = getattr(self, "_compute_h_norm_ratio", False)
         track_convergence = getattr(self, "_compute_convergence", False)
         
@@ -152,6 +186,16 @@ class DTTransformer(nn.Module):
         prev_interim = None
         velocity = torch.zeros_like(interim_thought) if self.velocity > 0 else None
         for i in range(iters_to_do):
+            if self.compile:
+                interim_thought = self._single_iter_compilable(initial_thought, interim_thought)
+                head_input = torch.einsum('k,kbld->bld', F.softmax(self.lane_combine, dim=0), interim_thought) if self.is_mhc else interim_thought
+                out = self.head(head_input)
+                # out is (B, *spatial_dims, out_channels), need (B, out_channels, *spatial_dims) for all_outputs
+                out = out.permute(0, -1, *range(1, out.dim() - 1))
+                if needs_all_outputs:
+                    all_outputs[:, i] = out
+                continue
+            
             #We deal with spatial problems on the inside. Model receives interim_thought and initial_thought as [B, ..., D]
             prev_interim = interim_thought
             
@@ -192,6 +236,16 @@ class DTTransformer(nn.Module):
             if track_norm_ratio:
                 h_flat = (interim_thought.mean(dim=0) if self.is_mhc else interim_thought).detach().to(torch.float32).reshape(interim_thought.size(1) if self.is_mhc else interim_thought.size(0), -1)
                 h_norms.append(h_flat.norm(dim=-1).mean().item())
+
+        if pad > 0:
+            crop = tuple(slice(pad, -pad) for _ in range(nspatial))
+            out = out[(slice(None), slice(None)) + crop]
+            if self.is_mhc:
+                interim_thought = interim_thought[(slice(None), slice(None)) + crop + (slice(None),)]
+            else:
+                interim_thought = interim_thought[(slice(None),) + crop + (slice(None),)]
+            if needs_all_outputs:
+                all_outputs = all_outputs[(slice(None), slice(None), slice(None)) + crop]
 
         #Resets state each forward step if using EMA on the activations
         if self.ema_act:

@@ -45,6 +45,15 @@ def save_nan_debug(net, inputs, targets, epoch, batch_idx, h_stats=None, save_di
     }, debug_path)
     tqdm.write(f"NaN debug info saved to {debug_path}")
 
+def has_nonfinite_gradients(net):
+    has_nonfinite = None
+    for p in net.parameters():
+        if p.grad is None:
+            continue
+        nonfinite = ~torch.isfinite(p.grad).all()
+        has_nonfinite = nonfinite if has_nonfinite is None else (has_nonfinite | nonfinite)
+    return bool(has_nonfinite) if has_nonfinite is not None else False
+
 
 # Ignore statemenst for pylint:
 #     Too many branches (R0912), Too many statements (R0915), No member (E1101),
@@ -245,9 +254,8 @@ def train_upweight(net, loaders, train_setup, device, epoch=0):
         else:
             loss.backward()
 
-        # Check for NaN in gradients
-        grad_nan = any(torch.isnan(p.grad).any() for p in net.parameters() if p.grad is not None)
-        if grad_nan:
+        # Check for non-finite gradients with a single host sync.
+        if has_nonfinite_gradients(net):
             tqdm.write(f"NaN in gradients at batch {batch_idx}!")
             save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
             raise ValueError(f"NaN in gradients at epoch {epoch}, batch {batch_idx}")
@@ -390,12 +398,11 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
         else:
             loss.backward()
 
-        # Check for NaN in gradients
-        grad_nan = any(torch.isnan(p.grad).any() for p in net.parameters() if p.grad is not None)
-        if grad_nan:
-            tqdm.write(f"NaN in gradients at batch {batch_idx}!")
+        # Check for non-finite gradients with a single host sync.
+        if has_nonfinite_gradients(net):
+            tqdm.write(f"Nonfinite in gradients at batch {batch_idx}!")
             save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-            raise ValueError(f"NaN in gradients at epoch {epoch}, batch {batch_idx}")
+            raise ValueError(f"Nonfinite in gradients at epoch {epoch}, batch {batch_idx}")
 
         if clip is not None:
             if use_amp:
@@ -526,12 +533,11 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
         else:
             loss.backward()
 
-        # Check for NaN in gradients
-        grad_nan = any(torch.isnan(p.grad).any() for p in net.parameters() if p.grad is not None)
-        if grad_nan:
-            tqdm.write(f"NaN in gradients at batch {batch_idx}!")
+        # Check for non-finite gradients with a single host sync.
+        if has_nonfinite_gradients(net):
+            tqdm.write(f"nonfinite in gradients at batch {batch_idx}!")
             save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-            raise ValueError(f"NaN in gradients at epoch {epoch}, batch {batch_idx}")
+            raise ValueError(f"nonfinite in gradients at epoch {epoch}, batch {batch_idx}")
 
         if clip is not None:
             if use_amp:

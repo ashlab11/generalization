@@ -70,11 +70,13 @@ def main(cfg: DictConfig):
                                                                                  cfg.problem.model,
                                                                                  device)        
     if compile_mode:
-        if isinstance(net, torch.nn.DataParallel):
-            net.module = torch.compile(net.module, fullgraph=False, dynamic=False, mode="reduce-overhead")
-        else:
-            net = torch.compile(net, fullgraph=False, dynamic=False, mode="reduce-overhead")
-        log.info("torch.compile enabled (fullgraph=False, dynamic=False, mode=reduce-overhead).")
+        model = net.module if isinstance(net, torch.nn.DataParallel) else net
+        compiled_blocks = 0
+        if hasattr(model, "recur_blocks"):
+            for i, block in enumerate(model.recur_blocks):
+                model.recur_blocks[i] = torch.compile(block, fullgraph=True, dynamic=False, mode="reduce-overhead")
+                compiled_blocks += 1
+        log.info(f"torch.compile enabled for {compiled_blocks} recurrent attention blocks (fullgraph=True, dynamic=False, mode=reduce-overhead).")
     pytorch_total_params = sum(p.numel() for p in net.parameters())
     
     # Initialize wandb with model info

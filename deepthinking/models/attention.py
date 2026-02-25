@@ -60,7 +60,7 @@ class ConvAttn(nn.Module):
 #Multi-headed attention with different attention methods
 class MHA(nn.Module):
     def __init__(self, input_dim, output_dim, num_heads, attn_type = 'full', 
-                 qk_normalization = False, num_sinks=1, max_seq_len = 512, kernel_size=5):
+                 qk_normalization = False, num_sinks=1, max_seq_len = 512, kernel_size=5, local_pad=False):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -69,6 +69,7 @@ class MHA(nn.Module):
         self.attn_type = attn_type
         self.num_sinks = num_sinks
         self.kernel_size = kernel_size
+        self.local_pad = local_pad
         assert output_dim % num_heads == 0, f"hidden_dim {output_dim} must be divisible by num_heads {num_heads}"
         
         self.qkv = nn.Linear(input_dim, output_dim * 3)            
@@ -135,9 +136,9 @@ class MHA(nn.Module):
                 #Two steps: first get non-CoT, then get CoT, add them together.
                 #[B, N, ..., D] -> [B, ..., N, D]
                 nspatial = len(spatial_dims)
-                q = q.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
-                k = k.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
-                v = v.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
+                q = q.permute(0, *range(2, 2 + nspatial), 1, -1)
+                k = k.permute(0, *range(2, 2 + nspatial), 1, -1)
+                v = v.permute(0, *range(2, 2 + nspatial), 1, -1)
                 attn_funcs = [natten.na1d, natten.na2d, natten.na3d]
                 attn_func = attn_funcs[nspatial - 1] #Get the correct attention dim
                 
@@ -244,7 +245,7 @@ class AttentionBlock(nn.Module):
                 injection_type = 'none', norm_type = 'peri', 
                 recall_inner = False, qk_normalization = False,
                 residual_method = 'add', attn_type='full', max_seq_len=None, num_sinks=0, kernel_size=5,
-                post_relu = False, *, spatial_dims):
+                local_attn_pad=False, post_relu = False, *, spatial_dims):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.lanes = lanes
@@ -257,6 +258,7 @@ class AttentionBlock(nn.Module):
         self.max_seq_len = max_seq_len
         self.num_sinks = num_sinks
         self.kernel_size = kernel_size
+        self.local_attn_pad = local_attn_pad
         self.post_relu = nn.ReLU() if post_relu else nn.Identity()
         
         # For LSTM: register buffer to store cell state (will be reset each forward pass)
@@ -311,6 +313,7 @@ class AttentionBlock(nn.Module):
                 qk_normalization=self.qk_normalization,
                 num_sinks=self.num_sinks,
                 kernel_size=self.kernel_size,
+                local_pad=self.local_attn_pad,
             )
                 
         self.mlp = nn.Sequential(

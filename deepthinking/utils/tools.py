@@ -249,7 +249,10 @@ def load_model_from_checkpoint(problem, model_args, device):
         apply_initialization(net, getattr(model_args, "init_method", "default"))
     net = net.to(device)
     if device == "cuda" and torch.cuda.device_count() > 1:
-        net = torch.nn.DataParallel(net)
+        logging.info("Model could be wrapped in DP. If model is large, we recommend doing so in tools.py")
+        #net = torch.nn.DataParallel(net)
+    else:
+        logging.info("Model NOT wrapped in DP")
     if model_path is not None:
         logging.info(f"Loading model from checkpoint {model_path}...")
         state_dict = torch.load(model_path, map_location=device)
