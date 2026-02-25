@@ -16,6 +16,7 @@ monotone_lambda: 0.0
 monotone_margin: 0.0
 noise_prob: 0.0
 noise_scale: 0.01
+velocity: 0
 residual_method: add
 ccot: none
 num_ccot_tokens: 10

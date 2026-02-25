@@ -5,23 +5,30 @@
 #SBATCH --mem=64G
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH --array=21-28,30-47
+#SBATCH --array=0-95
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=b200
 
+set -euo pipefail
 source .venv/bin/activate
-
-IDX=$SLURM_ARRAY_TASK_ID
 
 RESIDUAL_NAMES=("peri" "pre" "gru" "post")
 RESIDUAL_METHODS=("add" "add" "gru" "add")
 NORM_TYPES=("peri" "pre" "peri" "post")
 LRS=("0.0001" "0.0003" "0.001")
-SEEDS=("0" "1" "2" "3")
 
-SEED_IDX=$((IDX / 12))
-RESIDUAL_IDX=$(((IDX % 12) / 3))
-LR_IDX=$((IDX % 3))
+# Example: N_SEEDS=8 sbatch --array=0-$((8*4*3-1)) experiments/residual_path/run.bash
+N_SEEDS="${N_SEEDS:-8}"
+SEEDS=($(seq 0 $((N_SEEDS - 1))))
+
+IDX=$SLURM_ARRAY_TASK_ID
+NUM_RESIDUALS=${#RESIDUAL_NAMES[@]}
+NUM_LRS=${#LRS[@]}
+JOBS_PER_SEED=$((NUM_RESIDUALS * NUM_LRS))
+
+SEED_IDX=$((IDX / JOBS_PER_SEED))
+RESIDUAL_IDX=$(((IDX % JOBS_PER_SEED) / NUM_LRS))
+LR_IDX=$((IDX % NUM_LRS))
 
 SEED=${SEEDS[$SEED_IDX]}
 RESIDUAL_NAME=${RESIDUAL_NAMES[$RESIDUAL_IDX]}
@@ -29,7 +36,8 @@ RESIDUAL_METHOD=${RESIDUAL_METHODS[$RESIDUAL_IDX]}
 NORM_TYPE=${NORM_TYPES[$RESIDUAL_IDX]}
 LR=${LRS[$LR_IDX]}
 
-EXP_NAME="${RESIDUAL_NAME}_lr${LR}_seed${SEED}"
+
+EXP_NAME="trans_${RESIDUAL_NAME}_lr${LR}_seed${SEED}"
 
 python train_model.py \
     name=residual_path_ablation \
@@ -40,19 +48,21 @@ python train_model.py \
     problem.hyp.optimizer=adamw \
     problem.hyp.weight_decay=0.01 \
     problem.hyp.lr=$LR \
-    +problem.hyp.seed=$SEED \
-    problem.hyp.use_amp=false \
+    problem.hyp.seed=$SEED \
+    problem.hyp.use_amp=true \
     problem.hyp.train_mode=progressive \
     problem.hyp.rand_method=basic \
     problem.model.test_iterations.low=1 \
     problem.model.test_iterations.high=500 \
+    problem.model.kernel_size=3 \
     problem.model.hidden_dim=256 \
     problem.model.norm_type="$NORM_TYPE" \
-    problem.model.attn_type=conv \
-    problem.model.num_sinks=1 \
+    problem.model.attn_type=local \
+    problem.model.num_sinks=0 \
     problem.model.injection_type=linear \
     problem.model.recall_inner=false \
     problem.model.residual_method="$RESIDUAL_METHOD" \
     +problem.model.qk_normalization=true \
     problem.model.init_method=default \
-    +sweep_name=residual_path_ablation
+    problem.model.ccot=none \
+    +sweep_name=residual_path_ablation_3

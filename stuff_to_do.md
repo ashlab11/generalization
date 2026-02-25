@@ -1,6 +1,3 @@
-Somehow I need to figure out how to deal with 1D and 2D attention
-Start with just 1D attention, make sure it works with prefix-sum, THEN move to harder attn mechanisms
-
-**Interacting factors**
-1. 1D needs either local attention or full attention
-2. 
+AHHHHHHHHHHHHH
+For some reason cnn with peri 0.0001 isn't working anymore?? It used to get 100% hard acc but now it isn't, even though
+it's getting 99% bit acc?? What in the fuck is happening?? There goes my residual tests!

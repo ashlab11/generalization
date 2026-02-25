@@ -19,6 +19,7 @@ train_mode: progressive
 softmin_beta: 1.0
 softmin_lambda: 0.1
 val_period: 10
+full_only_hard: false
 warmup_period: 10
 rand_method: basic  # 'basic', 'geiping', or int for min detach steps
 use_amp: true  # Use automatic mixed precision (bfloat16)

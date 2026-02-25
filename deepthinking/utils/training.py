@@ -333,6 +333,8 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
     for batch_idx, (inputs, targets) in enumerate(tqdm(trainloader, leave=False)):
         inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True).long()
         targets = targets.view(targets.size(0), -1)
+        if problem == "mazes":
+            mask = inputs.view(inputs.size(0), inputs.size(1), -1).max(dim=1)[0] > 0
         
         optimizer.zero_grad(set_to_none=True)
 

@@ -56,6 +56,7 @@ def main(cfg: DictConfig):
     cfg.problem.model.test_iterations = list(range(cfg.problem.model.test_iterations["low"],
                                                    cfg.problem.model.test_iterations["high"] + 1))
     assert 0 <= cfg.problem.hyp.alpha <= 1, "Weighting for loss (alpha) not in [0, 1], exiting."
+    full_only_hard = bool(getattr(cfg.problem.hyp, "full_only_hard", False))
     profile_mode = bool(getattr(cfg, "profile", False))
     compile_mode = bool(getattr(cfg, "compile", False))
     if profile_mode:
@@ -334,18 +335,40 @@ def main(cfg: DictConfig):
         # evaluate the model periodically and at the final epoch
         if (epoch + 1) % cfg.problem.hyp.val_period == 0 or epoch + 1 == final_epoch_exclusive:
             start = time.time()
-            test_result = dt.test(net,
-                                  [loaders["test"],
-                                   loaders["val"],
-                                   loaders["train"]],
-                                  cfg.problem.hyp.test_mode,
-                                  cfg.problem.model.test_iterations,
-                                  cfg.problem.name,
-                                  device,
-                                  use_amp,
-                                  return_bitwise=True)
-            test_acc, val_acc, train_acc = test_result[0]
-            test_bit_acc, val_bit_acc, train_bit_acc = test_result[2]
+            if full_only_hard:
+                hard_result = dt.test(net,
+                                      [loaders["test"]],
+                                      cfg.problem.hyp.test_mode,
+                                      cfg.problem.model.test_iterations,
+                                      cfg.problem.name,
+                                      device,
+                                      use_amp,
+                                      return_bitwise=True)
+                easy_result = dt.test(net,
+                                      [loaders["val"], loaders["train"]],
+                                      cfg.problem.hyp.test_mode,
+                                      [cfg.problem.model.max_iters],
+                                      cfg.problem.name,
+                                      device,
+                                      use_amp,
+                                      return_bitwise=True)
+                test_acc = hard_result[0][0]
+                test_bit_acc = hard_result[2][0]
+                val_acc, train_acc = easy_result[0]
+                val_bit_acc, train_bit_acc = easy_result[2]
+            else:
+                test_result = dt.test(net,
+                                      [loaders["test"],
+                                       loaders["val"],
+                                       loaders["train"]],
+                                      cfg.problem.hyp.test_mode,
+                                      cfg.problem.model.test_iterations,
+                                      cfg.problem.name,
+                                      device,
+                                      use_amp,
+                                      return_bitwise=True)
+                test_acc, val_acc, train_acc = test_result[0]
+                test_bit_acc, val_bit_acc, train_bit_acc = test_result[2]
             log.info(f"Training accuracy: {train_acc}")
             log.info(f"Val accuracy: {val_acc}")
             log.info(f"Test accuracy (hard data): {test_acc}")
@@ -366,16 +389,17 @@ def main(cfg: DictConfig):
                         break            
             
             tb_last = cfg.problem.model.test_iterations[-1]
+            train_val_iter = cfg.problem.model.max_iters if full_only_hard else tb_last
             
             wandb.log({
-                "val/train_acc": train_acc[tb_last],
-                "val/train_acc_penalty": max(train_acc.values()) - train_acc[tb_last],
-                "val/val_acc": val_acc[tb_last],
-                "val/val_acc_penalty": max(val_acc.values()) - val_acc[tb_last],
+                "val/train_acc": train_acc[train_val_iter],
+                "val/train_acc_penalty": max(train_acc.values()) - train_acc[train_val_iter],
+                "val/val_acc": val_acc[train_val_iter],
+                "val/val_acc_penalty": max(val_acc.values()) - val_acc[train_val_iter],
                 "val/hard_acc": test_acc[tb_last],
                 "val/hard_acc_penalty": max(test_acc.values()) - test_acc[tb_last],
-                "val/train_bit_acc": train_bit_acc[tb_last],
-                "val/val_bit_acc": val_bit_acc[tb_last],
+                "val/train_bit_acc": train_bit_acc[train_val_iter],
+                "val/val_bit_acc": val_bit_acc[train_val_iter],
                 "val/hard_bit_acc": test_bit_acc[tb_last],
                 "val/time": time.time() - start,
                 **first_iter_converge 

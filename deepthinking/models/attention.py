@@ -10,6 +10,12 @@ from torchtune.modules import RotaryPositionalEmbeddings
 from .ropend import RoPENd
 import natten
 
+class FastRMSNorm(nn.RMSNorm):
+    # Keeps RMSNorm params in fp32 while avoiding bf16/fp16 mismatch fallback, avoids "can't dispatch"
+    def forward(self, x):
+        weight = self.weight if self.weight is None or self.weight.dtype == x.dtype else self.weight.to(x.dtype)
+        return F.rms_norm(x, self.normalized_shape, weight, self.eps)
+
 #Convolutional attention
 class ConvAttn(nn.Module):
     def __init__(self, input_dim, output_dim, kernel_size = 3, *, spatial_dims):
@@ -68,14 +74,14 @@ class MHA(nn.Module):
         self.qkv = nn.Linear(input_dim, output_dim * 3)            
         self.out_proj = nn.Linear(output_dim, output_dim)
         
-        self.q_norm = nn.RMSNorm(self.head_dim) if qk_normalization else nn.Identity()
-        self.k_norm = nn.RMSNorm(self.head_dim) if qk_normalization else nn.Identity()
+        self.q_norm = FastRMSNorm(self.head_dim) if qk_normalization else nn.Identity()
+        self.k_norm = FastRMSNorm(self.head_dim) if qk_normalization else nn.Identity()
         self.is_setup = False
         
         if self.num_sinks > 0:
             self.sink_k = nn.Parameter(torch.zeros(num_sinks, num_heads, self.head_dim))
             self.sink_v = nn.Parameter(torch.zeros(num_sinks, num_heads, self.head_dim))
-        
+
         self._compute_attn_stats = False
         
     def setup(self, x_shape, device=None):
@@ -259,21 +265,21 @@ class AttentionBlock(nn.Module):
         
         match self.norm_type:
             case 'pre':
-                self.pre_norm_func = nn.RMSNorm(hidden_dim)
+                self.pre_norm_func = FastRMSNorm(hidden_dim)
                 self.peri_norm_func = nn.Identity()
                 self.post_norm_func = nn.Identity()
             case 'peri':
-                self.pre_norm_func = nn.RMSNorm(hidden_dim)
-                self.peri_norm_func = nn.RMSNorm(hidden_dim)
+                self.pre_norm_func = FastRMSNorm(hidden_dim)
+                self.peri_norm_func = FastRMSNorm(hidden_dim)
                 self.post_norm_func = nn.Identity()
             case 'post':
                 self.pre_norm_func = nn.Identity()
                 self.peri_norm_func = nn.Identity()
-                self.post_norm_func = nn.RMSNorm(hidden_dim)
+                self.post_norm_func = FastRMSNorm(hidden_dim)
             case 'sandwich':
-                self.pre_norm_func = nn.RMSNorm(hidden_dim)
+                self.pre_norm_func = FastRMSNorm(hidden_dim)
                 self.peri_norm_func = nn.Identity()
-                self.post_norm_func = nn.RMSNorm(hidden_dim)
+                self.post_norm_func = FastRMSNorm(hidden_dim)
             case _:
                 raise ValueError(f"Invalid norm_type: {self.norm_type}. Must be 'pre', 'peri', 'post', or 'sandwich'")
             

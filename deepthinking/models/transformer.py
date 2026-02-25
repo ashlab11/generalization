@@ -26,7 +26,7 @@ class DTTransformer(nn.Module):
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
                  in_channels = 1, out_channels = 2, num_sinks=0, kernel_size=5, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
-                 noise_prob = 0.0, noise_scale = 0.01, *, spatial_dims, **kwargs):
+                 noise_prob = 0.0, noise_scale = 0.01, velocity = 0, *, spatial_dims, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
@@ -34,6 +34,7 @@ class DTTransformer(nn.Module):
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels)
         self.ccot = ccot
+        self.velocity = velocity
         if spatial_dims not in (1, 2, 3):
             raise ValueError(f"spatial_dims must be 1, 2, or 3; got {spatial_dims}")
         
@@ -45,6 +46,7 @@ class DTTransformer(nn.Module):
         assert recall_inner or residual_method != 'mhc', 'mhc requires recall_inner'
         assert not (ccot == 'iterative' and attn_type == 'local'), "iterative ccot currently doesn't work with local attn"
         assert ccot == 'none' or attn_type != 'conv', "conv doesn't work with ccot (dimension mismatch)"
+        assert velocity == 0 or (norm_type in ['peri', 'pre'] and residual_method == 'add'), 'velocity requires strictly additive residual updates'
         
         match self.ccot:
             case 'none':
@@ -148,6 +150,7 @@ class DTTransformer(nn.Module):
         
         penult_interim = None
         prev_interim = None
+        velocity = torch.zeros_like(interim_thought) if self.velocity > 0 else None
         for i in range(iters_to_do):
             #We deal with spatial problems on the inside. Model receives interim_thought and initial_thought as [B, ..., D]
             prev_interim = interim_thought
@@ -162,6 +165,11 @@ class DTTransformer(nn.Module):
                 interim_thought, ccot_tokens = block(interim_thought, initial_thought, ccot_tokens)
                 if self.ccot == 'iterative' and i % 5 == 0: #Only add iterations every five
                     ccot_tokens = torch.cat([ccot_tokens, self.get_new_ccot(x.shape[0])], dim = 1)
+
+            #Velocity designed to avoid early convergence / falling into local minima  
+            if self.velocity > 0:
+                velocity = self.velocity * velocity + (interim_thought - prev_interim)
+                interim_thought = prev_interim + velocity
             
                 
             #Track convergence

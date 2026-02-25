@@ -6,7 +6,7 @@
 #SBATCH -n 6
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH --array=13,15,17,19
+#SBATCH --array=13
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=b200
 #SBATCH --exclude=gpu4002
@@ -37,7 +37,7 @@ case "$MODEL_IDX" in
     TEST_LOW=1
     TEST_HIGH=1
     INJECTION_TYPE="none"
-    KERNEL_SIZE=11
+    KERNEL_SIZE=3
     ;;
   1)
     ATTN_TYPE="full"
@@ -46,16 +46,16 @@ case "$MODEL_IDX" in
     TEST_LOW=1
     TEST_HIGH=250
     INJECTION_TYPE="linear"
-    KERNEL_SIZE=11
+    KERNEL_SIZE=3
     ;;
   2)
     ATTN_TYPE="local"
     NUM_BLOCKS=1
     MAX_ITERS=30
     TEST_LOW=1
-    TEST_HIGH=250
+    TEST_HIGH=500
     INJECTION_TYPE="linear"
-    KERNEL_SIZE=11
+    KERNEL_SIZE=3
     ;;
   3)
     ATTN_TYPE="local"
@@ -78,7 +78,7 @@ else
   TRAIN_BATCH_SIZE=100
 fi
 
-EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_soft"
+EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_nosink"
 
 python train_model.py \
     name=length_generalization \
@@ -90,7 +90,7 @@ python train_model.py \
     problem.hyp.weight_decay=0.01 \
     problem.hyp.lr=$LR \
     problem.hyp.use_amp=true \
-    problem.hyp.train_mode=softmin \
+    problem.hyp.train_mode=progressive \
     problem.hyp.rand_method=basic \
     problem.model.max_iters=$MAX_ITERS \
     problem.model.num_blocks=$NUM_BLOCKS \
@@ -100,13 +100,15 @@ python train_model.py \
     problem.model.hidden_dim=256 \
     problem.model.norm_type=post \
     problem.model.attn_type=$ATTN_TYPE \
-    problem.model.num_sinks=2 \
+    problem.model.num_sinks=0 \
+    problem.model.velocity=0 \
     problem.model.kernel_size=$KERNEL_SIZE \
     problem.model.injection_type=$INJECTION_TYPE \
     problem.model.recall_inner=false \
     problem.model.residual_method=add \
     +problem.model.qk_normalization=true \
     problem.model.init_method=default \
+    problem.hyp.val_period=50 \
     problem.model.ccot=none \
     profile=false \
     compile=false \
