@@ -42,10 +42,18 @@ def test(net, loaders, mode, iters, problem, device, use_amp=False, return_bitwi
     bit_accs = []
     diag_stats = defaultdict(list)
     hooks = []
-    diag_state = {"enabled": True, "remaining_batches": 1}
+    diag_state = {"enabled": True, "remaining_batches": 1, "track_h_norm_only": False, "h_norm_ratio_values": []}
+    model = net.module if isinstance(net, torch.nn.DataParallel) else net
+    is_compiled_runtime = bool(getattr(model, "compile", False)) or any(hasattr(m, "_orig_mod") for m in model.modules())
+    if is_compiled_runtime:
+        _disable_diag(net, diag_state)
+        diag_state["track_h_norm_only"] = True
+        model._compute_h_norm_ratio = True
     
     # Setup diagnostic hooks
     for m in net.modules():
+        if not diag_state["enabled"]:
+            break
         if hasattr(m, '__class__'):
             if 'AttentionBlock' in str(type(m)):
                 def block_hook(module, input, output):
@@ -106,6 +114,9 @@ def test(net, loaders, mode, iters, problem, device, use_amp=False, return_bitwi
         else:
             raise ValueError(f"{ic.format()}: test_{mode}() not implemented.")
         accs.append(accuracy)
+
+    if len(diag_state["h_norm_ratio_values"]) > 0:
+        diag_stats["h_norm_ratio"].extend(diag_state["h_norm_ratio_values"])
     
     # Cleanup hooks
     for h in hooks: h.remove()
@@ -162,6 +173,11 @@ def test_default(net, testloader, iters, problem, device, use_amp=False, diag_st
             with autocast_context:
                 all_outputs = net(inputs, iters_to_do=max_iters)
 
+            if diag_state is not None and diag_state.get("track_h_norm_only", False):
+                model = net.module if isinstance(net, torch.nn.DataParallel) else net
+                if hasattr(model, "_last_h_norm_ratio"):
+                    diag_state["h_norm_ratio_values"].append(float(model._last_h_norm_ratio))
+
             for i in range(all_outputs.size(1)):
                 outputs = all_outputs[:, i]
                 predicted = get_predicted(inputs, outputs, problem)
@@ -188,10 +204,15 @@ def test_default(net, testloader, iters, problem, device, use_amp=False, diag_st
                     bit_total += (targets != -100).sum()
                 else:
                     bit_total += targets.numel()
-            if diag_state is not None and diag_state["enabled"]:
+            if diag_state is not None and (diag_state["enabled"] or diag_state.get("track_h_norm_only", False)):
                 diag_state["remaining_batches"] -= 1
                 if diag_state["remaining_batches"] <= 0:
-                    _disable_diag(net, diag_state)
+                    if diag_state["enabled"]:
+                        _disable_diag(net, diag_state)
+                    if diag_state.get("track_h_norm_only", False):
+                        diag_state["track_h_norm_only"] = False
+                        model = net.module if isinstance(net, torch.nn.DataParallel) else net
+                        model._compute_h_norm_ratio = False
 
     accuracy = (100.0 * corrects / total).cpu()
     if return_bitwise:
@@ -230,6 +251,11 @@ def test_max_conf(net, testloader, iters, problem, device, use_amp=False, diag_s
             with autocast_context:
                 all_outputs = net(inputs, iters_to_do=max_iters)
 
+            if diag_state is not None and diag_state.get("track_h_norm_only", False):
+                model = net.module if isinstance(net, torch.nn.DataParallel) else net
+                if hasattr(model, "_last_h_norm_ratio"):
+                    diag_state["h_norm_ratio_values"].append(float(model._last_h_norm_ratio))
+
             confidence_array = torch.zeros(max_iters, inputs.size(0)).to(device)
             corrects_array = torch.zeros(max_iters, inputs.size(0)).to(device)
             if return_bitwise:
@@ -263,10 +289,15 @@ def test_max_conf(net, testloader, iters, problem, device, use_amp=False, diag_s
             if return_bitwise:
                 bit_correct_this_iter = bit_corrects_array[best_idx, torch.arange(bit_corrects_array.size(1))]
                 bit_corrects += bit_correct_this_iter.sum(dim=1)
-            if diag_state is not None and diag_state["enabled"]:
+            if diag_state is not None and (diag_state["enabled"] or diag_state.get("track_h_norm_only", False)):
                 diag_state["remaining_batches"] -= 1
                 if diag_state["remaining_batches"] <= 0:
-                    _disable_diag(net, diag_state)
+                    if diag_state["enabled"]:
+                        _disable_diag(net, diag_state)
+                    if diag_state.get("track_h_norm_only", False):
+                        diag_state["track_h_norm_only"] = False
+                        model = net.module if isinstance(net, torch.nn.DataParallel) else net
+                        model._compute_h_norm_ratio = False
             if return_bitwise:
                 if problem == "mazes":
                     bit_total += mask.sum()

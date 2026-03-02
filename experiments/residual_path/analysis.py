@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 ENTITY = "asherlabovich-brown-university"
 PROJECT = "deep-thinking"
-OUT_DIR = "experiments/residual_path"
+OUT_DIR = "experiments/residual_path/linear"
 
 METHOD_ORDER = ["gru (peri)", "peri", "post", "pre"]
 METHOD_LABELS = {
@@ -38,8 +38,9 @@ runs = wandb.Api().runs(
     f"{ENTITY}/{PROJECT}",
     filters={
         "state": "finished",
-        "config.sweep_name": {"$in": ["residual_path_ablation", "residual_path_ablation_2"]},
-        "config.problem.hyp.seed": {"$exists": True},
+        "config.sweep_name": {"$in": ["residual_path_ablation_transformer"]},
+        "config.problem.hyp.seed": {"$exists": True, "$lte": 4},
+        'config.problem.model.injection_type': "linear"
     },
 )
 
@@ -127,7 +128,7 @@ save_heatmap(
 
 scatter_df = pd.concat(scatter_rows, ignore_index=True)
 scatter_df.to_csv(f"{OUT_DIR}/validation_hardacc_normratio_points.csv", index=False)
-high_acc_df = scatter_df[(scatter_df["hard_acc"] > 95) & (scatter_df['method'].isin(['pre', 'peri']))] #focus purely on residual
+high_acc_df = scatter_df[(scatter_df["hard_acc"] > 95)] #focus purely on residual
 max_row = high_acc_df.loc[high_acc_df["h_norm_ratio"].idxmax()]
 print(
     f"Highest h_norm_ratio with val/hard_acc > 95: {max_row['h_norm_ratio']:.6g} "

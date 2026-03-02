@@ -7,7 +7,6 @@ from math import factorial
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from torchtune.modules import RotaryPositionalEmbeddings
-from .ropend import RoPENd
 import natten
 
 class FastRMSNorm(nn.RMSNorm):
@@ -77,26 +76,30 @@ class MHA(nn.Module):
         
         self.q_norm = FastRMSNorm(self.head_dim) if qk_normalization else nn.Identity()
         self.k_norm = FastRMSNorm(self.head_dim) if qk_normalization else nn.Identity()
-        self.is_setup = False
         
         if self.num_sinks > 0:
             self.sink_k = nn.Parameter(torch.zeros(num_sinks, num_heads, self.head_dim))
             self.sink_v = nn.Parameter(torch.zeros(num_sinks, num_heads, self.head_dim))
 
         self._compute_attn_stats = False
-        
-    def setup(self, x_shape, device=None):
-        self.rope = RoPENd((*x_shape, self.head_dim))
-        if device is not None:
-            self.rope = self.rope.to(device)
-        self.shape = x_shape
-        self.is_setup = True
+    
+    def _apply_rope(self, x, spatial_dims):
+        nspatial = len(spatial_dims)
+        k_max = self.head_dim // (2 * nspatial)
+        theta_ks = 1 / (10000 ** (torch.arange(k_max, device=x.device, dtype=torch.float32) / k_max))
+        coords = torch.meshgrid([torch.arange(d, device=x.device, dtype=torch.float32) for d in spatial_dims], indexing='ij')
+        angles = torch.cat([coord.unsqueeze(-1) * theta_ks for coord in coords], dim=-1)
+        rot_real = torch.cos(angles).to(x.dtype)
+        rot_imag = torch.sin(angles).to(x.dtype)
+        x = x.reshape(*x.shape[:-1], -1, 2)
+        x_real, x_imag = x[..., 0], x[..., 1]
+        out_real = x_real * rot_real - x_imag * rot_imag
+        out_imag = x_real * rot_imag + x_imag * rot_real
+        return torch.stack((out_real, out_imag), dim=-1).flatten(-2)
     
     def forward(self, x, ccot_tokens):
         # x: (B, ..., D), and self-attention requires (B, N, L, D)
         # ccot tokens are B, I, D
-        if not self.is_setup or self.shape != x.shape[1:-1]:
-            self.setup(x.shape[1:-1], device=x.device)
         spatial_dims = x.shape[1:-1]
         L = math.prod(spatial_dims)
         B = x.shape[0] 
@@ -122,8 +125,8 @@ class MHA(nn.Module):
         k = k.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(*permute_dims)
         v = v.reshape(B, *spatial_dims, self.num_heads, self.head_dim).permute(*permute_dims)
         
-        q = self.rope(q) #(B, N, ..., D)
-        k = self.rope(k)
+        q = self._apply_rope(q, spatial_dims) #(B, N, ..., D)
+        k = self._apply_rope(k, spatial_dims)
         
         q, k = self.q_norm(q), self.k_norm(k)
         if q.dtype != v.dtype:
@@ -221,7 +224,7 @@ class MHA(nn.Module):
                     out = F.scaled_dot_product_attention(q, k, v) #[B, N, L + C, H]
                 
                 # Compute attention stats only when explicitly enabled by diagnostics.
-                if self._compute_attn_stats and len(self.shape) == 1:
+                if self._compute_attn_stats and len(spatial_dims) == 1 and not torch.compiler.is_compiling():
                     with torch.no_grad():
                         self._compute_attention_stats(q[:, :, :L, :], k)
                 out = out.transpose(1, 2).reshape(B, -1, self.output_dim)
@@ -398,12 +401,15 @@ class AttentionBlock(nn.Module):
             x, ccot_tokens = self.pre_norm_func(x), self.pre_norm_func(ccot_tokens)
             if self.recall_inner:
                 x = self.injection_func(x, h)
-                if self.injection_type == 'concat': #No "context" for ccot
+                if self.injection_type == 'concat' and ccot_tokens.shape[1] > 0: #No "context" for ccot
                     ccot_tokens = torch.cat([ccot_tokens, torch.zeros_like(ccot_tokens)], dim = -1)
             if block_name == 'attn':
                 x, ccot_tokens = self.attn(x, ccot_tokens) 
             if block_name == 'mlp':
-                x, ccot_tokens = self.mlp(x), self.mlp(ccot_tokens)
+                if ccot_tokens.shape[1] > 0:
+                    x, ccot_tokens = self.mlp(x), self.mlp(ccot_tokens)
+                else:
+                    x, ccot_tokens = self.mlp(x), ccot_tokens
             x = self.post_norm_func(self.residual_func(shortcut_x, self.peri_norm_func(x)))
             if shortcut_ccot.size(1) > 0:
                 ccot_tokens = self.post_norm_func(self.residual_func(shortcut_ccot, self.peri_norm_func(ccot_tokens)))

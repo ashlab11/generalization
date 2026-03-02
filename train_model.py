@@ -70,13 +70,21 @@ def main(cfg: DictConfig):
                                                                                  cfg.problem.model,
                                                                                  device)        
     if compile_mode:
+        FULLGRAPH = False
+        DYNAMIC = True
+        MODE = "default"
+        try:
+            torch._logging.set_logs(recompiles=True)
+            log.info("Enabled TorchDynamo recompile logging (recompiles=True).")
+        except Exception:
+            log.warning("Could not enable torch._logging recompile logs; set TORCH_LOGS=recompiles manually if needed.")
         model = net.module if isinstance(net, torch.nn.DataParallel) else net
         compiled_blocks = 0
         if hasattr(model, "recur_blocks"):
             for i, block in enumerate(model.recur_blocks):
-                model.recur_blocks[i] = torch.compile(block, fullgraph=True, dynamic=False, mode="reduce-overhead")
+                model.recur_blocks[i] = torch.compile(block, fullgraph=FULLGRAPH, dynamic=DYNAMIC, mode=MODE)
                 compiled_blocks += 1
-        log.info(f"torch.compile enabled for {compiled_blocks} recurrent attention blocks (fullgraph=True, dynamic=False, mode=reduce-overhead).")
+        log.info(f"torch.compile enabled for {compiled_blocks} recurrent attention blocks (fullgraph={FULLGRAPH}, dynamic={DYNAMIC}, mode={MODE}).")
     pytorch_total_params = sum(p.numel() for p in net.parameters())
     
     # Initialize wandb with model info
@@ -192,6 +200,8 @@ def main(cfg: DictConfig):
         log.info(f"Training bitwise accuracy at epoch {epoch}: {bit_acc}")
         log.info(f"Val accuracy at epoch {epoch}: {val_acc}")
         log.info(f"Val bitwise accuracy at epoch {epoch}: {val_bit_acc}")
+        if len(diag_stats.get('h_norm_ratio', [])) > 0:
+            log.info(f"Val h_norm_ratio (last/first hidden norm) at epoch {epoch}: {np.mean(diag_stats['h_norm_ratio']):.6f}")
         log.info(f"Average CE loss over first 5 iterations at epoch {epoch}: {first_five_ce_avg:.6f}")
         
         # Log LSTM weight norm diagnostic

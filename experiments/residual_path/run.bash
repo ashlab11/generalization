@@ -5,7 +5,7 @@
 #SBATCH --mem=64G
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-95
+#SBATCH --array=0-47
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=b200
 
@@ -18,7 +18,7 @@ NORM_TYPES=("peri" "pre" "peri" "post")
 LRS=("0.0001" "0.0003" "0.001")
 
 # Example: N_SEEDS=8 sbatch --array=0-$((8*4*3-1)) experiments/residual_path/run.bash
-N_SEEDS="${N_SEEDS:-8}"
+N_SEEDS="${N_SEEDS:-4}"
 SEEDS=($(seq 0 $((N_SEEDS - 1))))
 
 IDX=$SLURM_ARRAY_TASK_ID
@@ -37,7 +37,7 @@ NORM_TYPE=${NORM_TYPES[$RESIDUAL_IDX]}
 LR=${LRS[$LR_IDX]}
 
 
-EXP_NAME="conv_${RESIDUAL_NAME}_lr${LR}_seed${SEED}"
+EXP_NAME="concat_${RESIDUAL_NAME}_lr${LR}_seed${SEED}"
 
 python train_model.py \
     name=residual_path_ablation \
@@ -54,16 +54,17 @@ python train_model.py \
     problem.hyp.rand_method=basic \
     problem.model.test_iterations.low=1 \
     problem.model.test_iterations.high=500 \
-    problem.model.kernel_size=3 \
+    problem.model.kernel_size=5 \
     problem.model.hidden_dim=256 \
     problem.model.norm_type="$NORM_TYPE" \
-    problem.model.attn_type=conv \
+    problem.model.attn_type=local \
     problem.model.num_sinks=0 \
-    problem.model.injection_type=linear \
-    problem.model.recall_inner=false \
+    problem.model.injection_type=concat \
+    problem.model.recall_inner=true \
     problem.model.residual_method="$RESIDUAL_METHOD" \
     +problem.model.qk_normalization=true \
     problem.model.init_method=default \
     problem.hyp.full_only_hard=true \
     problem.model.ccot=none \
-    +sweep_name=residual_path_ablation_3
+    compile=true \
+    +sweep_name=residual_path_ablation_transformer

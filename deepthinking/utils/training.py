@@ -122,8 +122,9 @@ def compute_loss_gradient_sensitivity(loss_all_outputs, beta, lam):
     g_iter = g.abs().mean(dim=(0, 2))  # [I] - average over batch and sequence
     return g_iter
 
-def get_output_for_prog_loss(inputs, max_iters, net, rand_method = 'basic'):
+def get_output_for_prog_loss(inputs, max_iters, net, rand_method = 'basic', use_amp = False):
     # get features from n iterations to use as input
+    mark_step = getattr(getattr(torch, "compiler", None), "cudagraph_mark_step_begin", None)
     
     # Handle string integers from hydra config
     if rand_method == 'basic':
@@ -163,11 +164,22 @@ def get_output_for_prog_loss(inputs, max_iters, net, rand_method = 'basic'):
         k = randrange(1, 15)
 
     if n > 0:
-        _, interim_thought = net(inputs, iters_to_do=n)
-        interim_thought = interim_thought.detach()
+        if mark_step is not None:
+            mark_step()
+        with torch.no_grad():
+            with torch.amp.autocast(
+                device_type="cuda",
+                dtype=torch.bfloat16,
+                enabled=use_amp,
+                cache_enabled=False, #Necessary to avoid extraordinarily annoying issue: https://github.com/pytorch/pytorch/issues/112583  
+            ):
+                _, interim_thought = net(inputs, iters_to_do=n)
+        interim_thought = interim_thought.detach().clone()
     else:
         interim_thought = None
 
+    if mark_step is not None:
+        mark_step()
     outputs, _ = net(inputs, iters_elapsed=n, iters_to_do=k, interim_thought=interim_thought)
     return outputs, k
 
@@ -213,10 +225,8 @@ def train_upweight(net, loaders, train_setup, device, epoch=0):
         
         optimizer.zero_grad(set_to_none=True)
 
-        # Conditionally apply autocast based on use_amp flag
-        autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
-        
-        with autocast_context:
+        # Conditionally apply autocast based on use_amp flag        
+        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
             #[B, Iters, C, L]
             all_outputs = net(inputs, iters_to_do=max_iters, return_all = True)
             all_outputs = all_outputs.view(all_outputs.size(0), all_outputs.size(1), all_outputs.size(2), -1)
@@ -346,10 +356,8 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
         
         optimizer.zero_grad(set_to_none=True)
 
-        # Conditionally apply autocast based on use_amp flag
-        autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
-        
-        with autocast_context:
+        # Conditionally apply autocast based on use_amp flag        
+        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
             #[B, Iters, C, L]
             all_outputs = net(inputs, iters_to_do=max_iters, return_all = True)
             all_outputs = all_outputs.view(all_outputs.size(0), all_outputs.size(1), all_outputs.size(2), -1)
@@ -482,15 +490,13 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
 
         optimizer.zero_grad(set_to_none=True)
 
-        # Conditionally apply autocast based on use_amp flag
-        autocast_context = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type='cuda', enabled=False)
-        
-        with autocast_context:
+        # Conditionally apply autocast based on use_amp flag        
+        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
             #alpha = 1 -> full prog, alpha = 0 -> full all
             if alpha == 0:
                 loss_progressive = torch.zeros_like(targets).float()
             else:
-                outputs, k = get_output_for_prog_loss(inputs, max_iters, net, rand_method)
+                outputs, k = get_output_for_prog_loss(inputs, max_iters, net, rand_method = rand_method, use_amp = use_amp)
                 outputs = outputs.flatten(start_dim=2)
                 loss_progressive = criterion(outputs, targets)
                 

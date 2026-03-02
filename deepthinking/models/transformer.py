@@ -26,7 +26,8 @@ class DTTransformer(nn.Module):
                  recall_inner=False, qk_normalization = False,
                  post_relu = False, residual_method = 'add', lanes = 1, attn_type='full',
                  in_channels = 1, out_channels = 2, num_sinks=0, kernel_size=5, local_attn_pad=False, ema_act = False, ccot = 'none', num_ccot_tokens = 10,
-                 noise_prob = 0.0, noise_scale = 0.01, velocity = 0, *, spatial_dims, compile = False, **kwargs):
+                 noise_prob = 0.0, noise_scale = 0.01, velocity = 0, *, spatial_dims, compile = False, 
+                 init_norm = False, **kwargs):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
@@ -39,6 +40,7 @@ class DTTransformer(nn.Module):
         self.attn_type = attn_type
         self.kernel_size = kernel_size
         self.local_attn_pad = bool(local_attn_pad)
+        self.init_norm = nn.RMSNorm(hidden_dim) if init_norm else nn.Identity()
         if spatial_dims not in (1, 2, 3):
             raise ValueError(f"spatial_dims must be 1, 2, or 3; got {spatial_dims}")
         
@@ -148,21 +150,14 @@ class DTTransformer(nn.Module):
         elif x.dim() == 2:
             # (B, L) -> (B, L, 1)
             x = x.unsqueeze(-1)
-        nspatial = x.dim() - 2
-        pad = self.kernel_size // 2 if self.attn_type == 'local' and self.local_attn_pad else 0
-        if pad > 0:
-            pad_tuple = (pad, pad) * nspatial
-            x = F.pad(x.movedim(-1, 1), pad_tuple).movedim(1, -1)
 
         initial_thought = self.projection(x)
-        #initial_thought = self.init_norm(initial_thought)
+        initial_thought = self.init_norm(initial_thought)
 
         if interim_thought is None:
             interim_thought = initial_thought
         elif interim_thought.dim() >= 3 and interim_thought.size(1) == self.hidden_dim:
             interim_thought = interim_thought.permute(0, *range(2, interim_thought.dim()), 1)
-        if pad > 0:
-            interim_thought = F.pad(interim_thought.movedim(-1, 1), pad_tuple).movedim(1, -1)
         
         if self.is_mhc and interim_thought.dim() >= 3:
             interim_thought = interim_thought.unsqueeze(0).repeat(self.lanes, *([1] * interim_thought.dim()))
@@ -174,10 +169,11 @@ class DTTransformer(nn.Module):
             all_outputs = torch.empty((x.size(0), iters_to_do, self.out_channels, *spatial_dims),
                                       device=x.device, dtype=initial_thought.dtype)
         track_norm_ratio = getattr(self, "_compute_h_norm_ratio", False)
-        track_convergence = getattr(self, "_compute_convergence", False)
+        track_convergence = getattr(self, "_compute_convergence", False) and not self.compile
         
         if track_norm_ratio:
-            h_norms = []
+            first_h_norm = None
+            last_h_norm = None
         
         if track_convergence:
             self._first_convergence_iter = iters_to_do
@@ -188,6 +184,14 @@ class DTTransformer(nn.Module):
         for i in range(iters_to_do):
             if self.compile:
                 interim_thought = self._single_iter_compilable(initial_thought, interim_thought)
+                if track_norm_ratio and (i == 0 or i == iters_to_do - 1):
+                    h_flat = (interim_thought.mean(dim=0) if self.is_mhc else interim_thought).detach().to(torch.float32)
+                    h_flat = h_flat.reshape(interim_thought.size(1) if self.is_mhc else interim_thought.size(0), -1)
+                    h_norm = h_flat.norm(dim=-1).mean().item()
+                    if i == 0:
+                        first_h_norm = h_norm
+                    if i == iters_to_do - 1:
+                        last_h_norm = h_norm
                 head_input = torch.einsum('k,kbld->bld', F.softmax(self.lane_combine, dim=0), interim_thought) if self.is_mhc else interim_thought
                 out = self.head(head_input)
                 # out is (B, *spatial_dims, out_channels), need (B, out_channels, *spatial_dims) for all_outputs
@@ -233,19 +237,14 @@ class DTTransformer(nn.Module):
             out = out.permute(0, -1, *range(1, out.dim() - 1))
             if needs_all_outputs:
                 all_outputs[:, i] = out
-            if track_norm_ratio:
-                h_flat = (interim_thought.mean(dim=0) if self.is_mhc else interim_thought).detach().to(torch.float32).reshape(interim_thought.size(1) if self.is_mhc else interim_thought.size(0), -1)
-                h_norms.append(h_flat.norm(dim=-1).mean().item())
-
-        if pad > 0:
-            crop = tuple(slice(pad, -pad) for _ in range(nspatial))
-            out = out[(slice(None), slice(None)) + crop]
-            if self.is_mhc:
-                interim_thought = interim_thought[(slice(None), slice(None)) + crop + (slice(None),)]
-            else:
-                interim_thought = interim_thought[(slice(None),) + crop + (slice(None),)]
-            if needs_all_outputs:
-                all_outputs = all_outputs[(slice(None), slice(None), slice(None)) + crop]
+            if track_norm_ratio and (i == 0 or i == iters_to_do - 1):
+                h_flat = (interim_thought.mean(dim=0) if self.is_mhc else interim_thought).detach().to(torch.float32)
+                h_flat = h_flat.reshape(interim_thought.size(1) if self.is_mhc else interim_thought.size(0), -1)
+                h_norm = h_flat.norm(dim=-1).mean().item()
+                if i == 0:
+                    first_h_norm = h_norm
+                if i == iters_to_do - 1:
+                    last_h_norm = h_norm
 
         #Resets state each forward step if using EMA on the activations
         if self.ema_act:
@@ -258,8 +257,8 @@ class DTTransformer(nn.Module):
                 return all_outputs
             
         if track_norm_ratio:
-            if len(h_norms) >= 2 and h_norms[0] != 0:
-                self._last_h_norm_ratio = h_norms[-1] / h_norms[0]
+            if first_h_norm is not None and last_h_norm is not None and first_h_norm != 0:
+                self._last_h_norm_ratio = last_h_norm / first_h_norm
             else:
                 self._last_h_norm_ratio = 0.0
         if track_convergence:

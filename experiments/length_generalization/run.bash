@@ -54,7 +54,7 @@ case "$MODEL_IDX" in
     MAX_ITERS=30
     TEST_LOW=1
     TEST_HIGH=250
-    INJECTION_TYPE="linear"
+    INJECTION_TYPE="concat"
     KERNEL_SIZE=5
     ;;
   3)
@@ -78,7 +78,7 @@ else
   TRAIN_BATCH_SIZE=100
 fi
 
-EXP_NAME="${MODEL_NAME}_${PROBLEM}_lr${LR}_pad"
+EXP_NAME="concat_initnorm_${MODEL_NAME}_${PROBLEM}_lr${LR}"
 
 python train_model.py \
     name=length_generalization \
@@ -96,22 +96,23 @@ python train_model.py \
     problem.model.num_blocks=$NUM_BLOCKS \
     problem.model.test_iterations.low=$TEST_LOW \
     problem.hyp.train_batch_size=$TRAIN_BATCH_SIZE \
+    problem.hyp.test_batch_size=$TRAIN_BATCH_SIZE \
     problem.model.test_iterations.high=$TEST_HIGH \
     problem.model.hidden_dim=256 \
-    problem.model.norm_type=peri \
+    problem.model.norm_type=post \
     problem.model.attn_type=$ATTN_TYPE \
+    problem.model.init_norm=true \
     problem.model.num_sinks=0 \
     problem.model.velocity=0 \
     problem.model.kernel_size=$KERNEL_SIZE \
     problem.model.injection_type=$INJECTION_TYPE \
-    problem.model.recall_inner=false \
-    problem.model.residual_method=gru \
-    problem.model.local_attn_pad=true \
+    problem.model.recall_inner=true \
+    problem.model.residual_method=add \
     +problem.model.qk_normalization=true \
     problem.model.init_method=default \
     problem.hyp.val_period=10 \
     problem.hyp.full_only_hard=true \
     problem.model.ccot=none \
     profile=false \
-    compile=false \
+    compile=true \
     +sweep_name=length_generalization_2
