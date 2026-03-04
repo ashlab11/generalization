@@ -139,9 +139,9 @@ class MHA(nn.Module):
                 #Two steps: first get non-CoT, then get CoT, add them together.
                 #[B, N, ..., D] -> [B, ..., N, D]
                 nspatial = len(spatial_dims)
-                q = q.permute(0, *range(2, 2 + nspatial), 1, -1)
-                k = k.permute(0, *range(2, 2 + nspatial), 1, -1)
-                v = v.permute(0, *range(2, 2 + nspatial), 1, -1)
+                q = q.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
+                k = k.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
+                v = v.permute(0, *range(2, 2 + nspatial), 1, -1).contiguous()
                 attn_funcs = [natten.na1d, natten.na2d, natten.na3d]
                 attn_func = attn_funcs[nspatial - 1] #Get the correct attention dim
                 
@@ -158,8 +158,17 @@ class MHA(nn.Module):
                     add_k.append(k_ccot.transpose(1, 2).contiguous())
                     add_v.append(v_ccot.transpose(1, 2).contiguous())
                 
-                additional_k = torch.cat(add_k, dim=1) if add_k else None
-                additional_v = torch.cat(add_v, dim=1) if add_v else None
+                #Saves time by avoiding concat
+                match len(add_k):
+                    case 0:
+                        additional_k = None
+                        additional_v = None
+                    case 1:
+                        additional_k = add_k[0]
+                        additional_v = add_v[0]
+                    case 2:
+                        additional_k = torch.cat(add_k, dim=1)
+                        additional_v = torch.cat(add_v, dim=1)
                 
                 # Optional NATTEN tuning for Blackwell (B200). Falls back automatically otherwise.
                 natten_kwargs = {}

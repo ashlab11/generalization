@@ -13,9 +13,16 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import math
+import torch.profiler as profiler
 
 from .attention import AttentionBlock
 from .ema_linear import EMA_Linear
+
+class FastRMSNorm(nn.RMSNorm):
+    # Keeps RMSNorm params in fp32 while avoiding bf16/fp16 mismatch fallback, avoids "can't dispatch"
+    def forward(self, x):
+        weight = self.weight if self.weight is None or self.weight.dtype == x.dtype else self.weight.to(x.dtype)
+        return F.rms_norm(x, self.normalized_shape, weight, self.eps)
 
 #Overarching DT Transformer class. Should work with 1D data as well as 2D data.
 class DTTransformer(nn.Module):
@@ -40,7 +47,7 @@ class DTTransformer(nn.Module):
         self.attn_type = attn_type
         self.kernel_size = kernel_size
         self.local_attn_pad = bool(local_attn_pad)
-        self.init_norm = nn.RMSNorm(hidden_dim) if init_norm else nn.Identity()
+        self.init_norm = FastRMSNorm(hidden_dim) if init_norm else nn.Identity()
         if spatial_dims not in (1, 2, 3):
             raise ValueError(f"spatial_dims must be 1, 2, or 3; got {spatial_dims}")
         
@@ -83,14 +90,11 @@ class DTTransformer(nn.Module):
                                            ) 
                                            for _ in range(num_blocks)])
         self.head = nn.Sequential(
-            nn.RMSNorm(hidden_dim) if norm_before_head else nn.Identity(),
+            FastRMSNorm(hidden_dim) if norm_before_head else nn.Identity(),
             nn.Linear(hidden_dim, hidden_dim), 
             nn.GELU(), 
             nn.Linear(hidden_dim, self.out_channels)
         )
-
-        #Small parameters
-        self.init_norm = nn.RMSNorm(hidden_dim)
         
         self.projection = nn.Linear(self.in_channels, hidden_dim)
         self.is_mhc = residual_method == 'mhc'

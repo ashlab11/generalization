@@ -45,16 +45,6 @@ def save_nan_debug(net, inputs, targets, epoch, batch_idx, h_stats=None, save_di
     }, debug_path)
     tqdm.write(f"NaN debug info saved to {debug_path}")
 
-def has_nonfinite_gradients(net):
-    has_nonfinite = None
-    for p in net.parameters():
-        if p.grad is None:
-            continue
-        nonfinite = ~torch.isfinite(p.grad).all()
-        has_nonfinite = nonfinite if has_nonfinite is None else (has_nonfinite | nonfinite)
-    return bool(has_nonfinite) if has_nonfinite is not None else False
-
-
 # Ignore statemenst for pylint:
 #     Too many branches (R0912), Too many statements (R0915), No member (E1101),
 #     Not callable (E1102), Invalid name (C0103), No exception (W0702),
@@ -232,13 +222,7 @@ def train_upweight(net, loaders, train_setup, device, epoch=0):
             all_outputs = all_outputs.view(all_outputs.size(0), all_outputs.size(1), all_outputs.size(2), -1)
             outputs_max_iters = all_outputs[:, -1, :, :]
             B, I, C, L = all_outputs.size()
-            
-            #NaN detection
-            if torch.isnan(all_outputs).any():
-                tqdm.write(f"NaN in outputs at batch {batch_idx}!")
-                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-                raise ValueError(f"NaN in outputs at epoch {epoch}, batch {batch_idx}")
-            
+        
             targets_exp = targets.unsqueeze(1).expand(-1, I, -1)
             loss_all_outputs = criterion(
                 all_outputs.view(B * I, C, L),
@@ -251,12 +235,6 @@ def train_upweight(net, loaders, train_setup, device, epoch=0):
             )
             loss_weights = loss_weights / loss_weights.sum()
             loss = torch.einsum('ijk,j -> ik', loss_all_outputs, loss_weights).mean()
-            
-            # NaN detection in loss (before backward)
-            if torch.isnan(loss):
-                tqdm.write(f"NaN in loss at batch {batch_idx}!")
-                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-                raise ValueError(f"NaN in loss at epoch {epoch}, batch {batch_idx}")
         
         # Use scaler if amp is enabled, otherwise regular backward
         if use_amp:
@@ -264,16 +242,10 @@ def train_upweight(net, loaders, train_setup, device, epoch=0):
         else:
             loss.backward()
 
-        # Check for non-finite gradients with a single host sync.
-        if has_nonfinite_gradients(net):
-            tqdm.write(f"NaN in gradients at batch {batch_idx}!")
-            save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-            raise ValueError(f"NaN in gradients at epoch {epoch}, batch {batch_idx}")
-
         if clip is not None:
             if use_amp:
                 scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(net.parameters(), clip)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), clip, error_if_nonfinite=True)
         
         if use_amp:
             scaler.step(optimizer)
@@ -363,13 +335,7 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
             all_outputs = all_outputs.view(all_outputs.size(0), all_outputs.size(1), all_outputs.size(2), -1)
             outputs_max_iters = all_outputs[:, -1, :, :]
             B, I, C, L = all_outputs.size()
-            
-            #NaN detection
-            if torch.isnan(all_outputs).any():
-                tqdm.write(f"NaN in outputs at batch {batch_idx}!")
-                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-                raise ValueError(f"NaN in outputs at epoch {epoch}, batch {batch_idx}")
-            
+        
             targets_exp = targets.unsqueeze(1).expand(-1, I, -1)
             loss_all_outputs = criterion(
                 all_outputs.view(B * I, C, L),
@@ -393,12 +359,6 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
             relu_loss = (weights * relu_suffix).sum(dim = 1)
             
             loss = ((1 - lam) * softmin_loss + lam * relu_loss).mean()
-            
-            # NaN detection in loss (before backward)
-            if torch.isnan(loss):
-                tqdm.write(f"NaN in loss at batch {batch_idx}!")
-                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-                raise ValueError(f"NaN in loss at epoch {epoch}, batch {batch_idx}")
         
         # Use scaler if amp is enabled, otherwise regular backward
         if use_amp:
@@ -406,16 +366,10 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
         else:
             loss.backward()
 
-        # Check for non-finite gradients with a single host sync.
-        if has_nonfinite_gradients(net):
-            tqdm.write(f"Nonfinite in gradients at batch {batch_idx}!")
-            save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-            raise ValueError(f"Nonfinite in gradients at epoch {epoch}, batch {batch_idx}")
-
         if clip is not None:
             if use_amp:
                 scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(net.parameters(), clip)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), clip, error_if_nonfinite=True)
         
         if use_amp:
             scaler.step(optimizer)
@@ -436,7 +390,7 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
             correct += torch.amin(predicted == targets, dim=[-1]).sum()
         total += targets.size(0)
         if problem == "mazes":
-            bit_correct += (predicted == targets)[mask].sum()
+            bit_correct += ((predicted == targets) & mask).sum()
             bit_total += mask.sum()
         elif problem not in {"rule110", "cellular"}:
             bit_correct += (predicted == targets).sum()
@@ -507,15 +461,7 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
                 outputs_max_iters, _ = net(inputs, iters_to_do=max_iters)
                 outputs_max_iters = outputs_max_iters.flatten(start_dim=2)
                 loss_max_iters = criterion(outputs_max_iters, targets)
-            
-
-
-            # NaN detection in loss
-            if torch.isnan(loss_max_iters).any() or torch.isnan(loss_progressive).any():
-                tqdm.write(f"NaN in loss at batch {batch_idx}!")
-                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-                raise ValueError(f"NaN in loss at epoch {epoch}, batch {batch_idx}")
-
+        
             if problem == "mazes":
                 loss_max_iters = (loss_max_iters * mask)
                 loss_max_iters = loss_max_iters[mask > 0]
@@ -526,12 +472,6 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
             loss_progressive_mean = loss_progressive.mean()
 
             loss = (1 - alpha) * loss_max_iters_mean + alpha * loss_progressive_mean
-            
-            # NaN detection in loss (before backward)
-            if torch.isnan(loss):
-                tqdm.write(f"NaN in loss at batch {batch_idx}!")
-                save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-                raise ValueError(f"NaN in loss at epoch {epoch}, batch {batch_idx}")
         
         # Use scaler if amp is enabled, otherwise regular backward
         if use_amp:
@@ -539,16 +479,10 @@ def train_progressive(net, loaders, train_setup, device, epoch=0):
         else:
             loss.backward()
 
-        # Check for non-finite gradients with a single host sync.
-        if has_nonfinite_gradients(net):
-            tqdm.write(f"nonfinite in gradients at batch {batch_idx}!")
-            save_nan_debug(net, inputs, targets, epoch, batch_idx, last_h_stats)
-            raise ValueError(f"nonfinite in gradients at epoch {epoch}, batch {batch_idx}")
-
         if clip is not None:
             if use_amp:
                 scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(net.parameters(), clip)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), clip, error_if_nonfinite=True)
         
         if use_amp:
             scaler.step(optimizer)

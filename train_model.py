@@ -144,6 +144,8 @@ def main(cfg: DictConfig):
         profiled_epoch = None
     log.info(f"==> Starting training for {max(final_epoch_exclusive - start_epoch, 0)} epochs...")
     highest_val_acc_so_far = -1
+    highest_val_milestone_acc_so_far = -1
+    highest_hard_milestone_acc_so_far = -1
     best_so_far = False
 
     prev_state = None  # Keep previous epoch state for debugging
@@ -402,13 +404,27 @@ def main(cfg: DictConfig):
             
             tb_last = cfg.problem.model.test_iterations[-1]
             train_val_iter = cfg.problem.model.max_iters if full_only_hard else tb_last
+            final_val_acc = val_acc[train_val_iter]
+            final_hard_acc = test_acc[tb_last]
+
+            # Save milestone checkpoints at first epoch that reaches a new best.
+            if final_val_acc > highest_val_milestone_acc_so_far:
+                highest_val_milestone_acc_so_far = final_val_acc
+                state = {"net": net.state_dict(), "epoch": epoch, "optimizer": optimizer.state_dict()}
+                log.info(f"Saving model to: model_valbest.pth (val acc={final_val_acc:.4f})")
+                torch.save(state, "model_valbest.pth")
+            if final_hard_acc > highest_hard_milestone_acc_so_far:
+                highest_hard_milestone_acc_so_far = final_hard_acc
+                state = {"net": net.state_dict(), "epoch": epoch, "optimizer": optimizer.state_dict()}
+                log.info(f"Saving model to: model_hardbest.pth (hard acc={final_hard_acc:.4f})")
+                torch.save(state, "model_hardbest.pth")
             
             wandb.log({
                 "val/train_acc": train_acc[train_val_iter],
                 "val/train_acc_penalty": max(train_acc.values()) - train_acc[train_val_iter],
-                "val/val_acc": val_acc[train_val_iter],
+                "val/val_acc": final_val_acc,
                 "val/val_acc_penalty": max(val_acc.values()) - val_acc[train_val_iter],
-                "val/hard_acc": test_acc[tb_last],
+                "val/hard_acc": final_hard_acc,
                 "val/hard_acc_penalty": max(test_acc.values()) - test_acc[tb_last],
                 "val/train_bit_acc": train_bit_acc[train_val_iter],
                 "val/val_bit_acc": val_bit_acc[train_val_iter],

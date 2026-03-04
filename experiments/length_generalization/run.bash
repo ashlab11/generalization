@@ -78,7 +78,7 @@ else
   TRAIN_BATCH_SIZE=100
 fi
 
-EXP_NAME="concat_initnorm_${MODEL_NAME}_${PROBLEM}_lr${LR}"
+EXP_NAME="concat_softnosink_${MODEL_NAME}_${PROBLEM}_lr${LR}"
 
 python train_model.py \
     name=length_generalization \
@@ -90,7 +90,7 @@ python train_model.py \
     problem.hyp.weight_decay=0.01 \
     problem.hyp.lr=$LR \
     problem.hyp.use_amp=true \
-    problem.hyp.train_mode=progressive \
+    problem.hyp.train_mode=softmin \
     problem.hyp.rand_method=basic \
     problem.model.max_iters=$MAX_ITERS \
     problem.model.num_blocks=$NUM_BLOCKS \
@@ -108,11 +108,11 @@ python train_model.py \
     problem.model.injection_type=$INJECTION_TYPE \
     problem.model.recall_inner=true \
     problem.model.residual_method=add \
-    +problem.model.qk_normalization=true \
+    +problem.model.qk_normalization=false \
     problem.model.init_method=default \
     problem.hyp.val_period=10 \
     problem.hyp.full_only_hard=true \
     problem.model.ccot=none \
-    profile=false \
+    profile=true \
     compile=true \
     +sweep_name=length_generalization_2

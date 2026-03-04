@@ -192,7 +192,8 @@ def test_default(net, testloader, iters, problem, device, use_amp=False, diag_st
                     corrects[i] += torch.amin(predicted == targets, dim=[1]).sum()
                     if return_bitwise:
                         if problem == "mazes":
-                            bit_corrects[i] += (predicted == targets)[mask].sum()
+                            #& mask instead of [mask] stops syncs
+                            bit_corrects[i] += ((predicted == targets) & mask).sum()
                         else:
                             bit_corrects[i] += (predicted == targets).sum()
 
