@@ -1,1 +1,1 @@
-Work for "Stability and Generalization in Looped Transformers"
+Work for "Stability and Generalization in Looped Transformers". This repo is majorly in-progress, and over the next week or two I'll be making a detailed README and instructions on how to use the codebase. At the current moment, all conducted experiments can be run with the code given, but they may be difficult to find. This repo was originally taken from (before substantial editing), Bansal et. al 2022's work on deep-thinking. 
