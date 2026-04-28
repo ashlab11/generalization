@@ -17,6 +17,8 @@ import torch
 from torch.utils import data
 from easy_to_hard_data import MazeDataset
 
+from .repo_paths import repo_data_dir
+
 # Ignore statemenst for pylint:
 #     Too many branches (R0912), Too many statements (R0915), No member (E1101),
 #     Not callable (E1102), Invalid name (C0103), No exception (W0702),
@@ -25,7 +27,7 @@ from easy_to_hard_data import MazeDataset
 # pylint: disable=R0912, R0915, E1101, E1102, C0103, W0702, R0914, C0116, C0115, W0611
 
 MAZE_BASE_URL = "https://cs.umd.edu/~tomg/download/Easy_to_Hard_Datav2"
-MAZE_ROOT = "../../../data"
+MAZE_ROOT = repo_data_dir()
 
 
 def _maze_files_exist(root, folder_name):

@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from torch.utils import data
 
+from .repo_paths import repo_data_dir
+
 SUDOKU_TRAIN_URL = "https://huggingface.co/datasets/sapientinc/sudoku-extreme/resolve/main/train.csv"
 SUDOKU_TEST_URL = "https://huggingface.co/datasets/sapientinc/sudoku-extreme/resolve/main/test.csv"
 
@@ -193,7 +195,7 @@ def prepare_sudoku_loader(
         if key in kwargs:
             dataset_kwargs[key] = kwargs[key]
 
-    root = "../../../data"
+    root = repo_data_dir()
     raw_dir = os.path.join(root, "sudoku_extreme", "raw")
     if dataset_kwargs.get("download", True):
         _download(SUDOKU_TRAIN_URL, raw_dir)

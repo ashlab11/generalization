@@ -143,27 +143,7 @@ def main(cfg: DictConfig):
         wandb_dict["test/hard_acc"] = test_acc[last_iter]
     if test_bit_acc is not None:
         wandb_dict["test/hard_bit_acc"] = test_bit_acc[last_iter]
-    
-    # Create accuracy vs iterations plot
-    if not cfg.quick_test:
-        plot = wandb.plot.line_series(
-            xs=test_iterations,
-            ys=[[test_acc[i] for i in test_iterations],
-                [val_acc[i] for i in test_iterations] if val_acc else [],
-                [train_acc[i] for i in test_iterations] if train_acc else []],
-            keys=["test", "val", "train"],
-            title="Accuracy vs Iterations",
-            xname="iterations")
-        wandb_dict['test/accuracy_plot'] = plot
-    else:
-        plot = wandb.plot.line_series(
-            xs=test_iterations,
-            ys=[[test_acc[i] for i in test_iterations]],
-            keys=["test"],
-            title="Accuracy vs Iterations",
-            xname="iterations")
-        wandb_dict['test/accuracy_plot'] = plot
-    
+
     wandb.log(wandb_dict)
 
     model_name_str = f"{cfg.problem.model.model}_hidden_dim={cfg.problem.model.hidden_dim}"

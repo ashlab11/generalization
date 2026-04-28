@@ -32,6 +32,10 @@ output_default
 stuff_to_do.md
 *.out
 AGENTS.md
+*.tex
+*.csv
+archive/
+explanations.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -256,7 +256,10 @@ def load_model_from_checkpoint(problem, model_args, device):
     if model_path is not None:
         logging.info(f"Loading model from checkpoint {model_path}...")
         state_dict = torch.load(model_path, map_location=device)
-        net.load_state_dict(state_dict["net"])
+        model_state = state_dict["net"]
+        if any("._orig_mod." in k for k in model_state.keys()): #Compile
+            model_state = {k.replace("._orig_mod.", "."): v for k, v in model_state.items()}
+        net.load_state_dict(model_state)
         epoch = state_dict["epoch"] + 1
         optimizer = state_dict["optimizer"]
 

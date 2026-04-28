@@ -14,6 +14,8 @@ import torch
 from torch.utils import data
 from easy_to_hard_data import PrefixSumDataset
 
+from .repo_paths import repo_data_dir
+
 # Ignore statemenst for pylint:
 #     Too many branches (R0912), Too many statements (R0915), No member (E1101),
 #     Not callable (E1102), Invalid name (C0103), No exception (W0702),
@@ -26,15 +28,15 @@ def prepare_prefix_loader(train_batch_size, test_batch_size, train_data, test_da
                           train_split=0.8, exact = True, shuffle=True):
 
     if exact:
-        dataset = PrefixSumDataset("../../../data", num_bits=train_data)
+        dataset = PrefixSumDataset(repo_data_dir(), num_bits=train_data)
     else:
         num_bit_list = range(16, train_data + 1) #prefix-sums starts at 16-bit
         datasets = []
         for bits in num_bit_list:
-            datasets.append(PrefixSumDataset("../../../data", num_bits=bits)) 
+            datasets.append(PrefixSumDataset(repo_data_dir(), num_bits=bits)) 
         dataset = data.ConcatDataset(datasets) 
             
-    testset = PrefixSumDataset("../../../data", num_bits=test_data)
+    testset = PrefixSumDataset(repo_data_dir(), num_bits=test_data)
 
     train_split = int(train_split * len(dataset))
 

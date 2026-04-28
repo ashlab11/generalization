@@ -40,10 +40,11 @@ class ConvAttn(nn.Module):
             case 3: 
                 conv_func = nn.Conv3d
         
+        pad = (self.kernel_size - 1) // 2
         self.conv1 = conv_func(self.output_dim, self.output_dim, kernel_size=self.kernel_size,
-                               stride=1, padding=1, bias=False)
+                               stride=1, padding=pad, bias=False)
         self.conv2 = conv_func(self.output_dim, self.output_dim, kernel_size=self.kernel_size,
-                               stride=1, padding=1, bias=False)
+                               stride=1, padding=pad, bias=False)
         if device is not None:
             self.conv1 = self.conv1.to(device)
             self.conv2 = self.conv2.to(device)
@@ -70,7 +71,8 @@ class MHA(nn.Module):
         self.kernel_size = kernel_size
         self.local_pad = local_pad
         assert output_dim % num_heads == 0, f"hidden_dim {output_dim} must be divisible by num_heads {num_heads}"
-        
+        assert self.head_dim % 2 == 0, f"head_dim must be even for RoPE (hidden_dim={output_dim}, num_heads={num_heads})"
+
         self.qkv = nn.Linear(input_dim, output_dim * 3)            
         self.out_proj = nn.Linear(output_dim, output_dim)
         
@@ -171,8 +173,9 @@ class MHA(nn.Module):
                         additional_v = torch.cat(add_v, dim=1)
                 
                 # Optional NATTEN tuning for Blackwell (B200). Falls back automatically otherwise.
+                # Blackwell FNA only supports FP16, BF16, FP8-E4M3 and FP8-E5M2, not FP32.
                 natten_kwargs = {}
-                if q.is_cuda and torch.cuda.get_device_capability(q.device) in {(10, 0), (10, 3)}:
+                if q.is_cuda and torch.cuda.get_device_capability(q.device) in {(10, 0), (10, 3)} and q.dtype in (torch.float16, torch.bfloat16):
                     natten_kwargs["backend"] = "blackwell-fna"
                     natten_kwargs["run_persistent_kernel"] = True
                     natten_kwargs["attention_kwargs"] = {

@@ -15,8 +15,6 @@ import logging
 import os
 from collections import OrderedDict
 import wandb
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 
 import hydra
 import numpy as np
@@ -92,7 +90,11 @@ def main(cfg: DictConfig):
     wandb.init(
         project='deep-thinking',
         name=run_id,
-        config=OmegaConf.to_container(cfg, resolve=True)
+        config=OmegaConf.to_container(cfg, resolve=True),
+        settings=wandb.Settings(
+            x_graphql_timeout_seconds=120,
+            x_file_stream_timeout_seconds=120,
+        ),
     )
     if not getattr(cfg, "run_id", None):
         cfg.run_id = wandb.run.name
@@ -149,7 +151,6 @@ def main(cfg: DictConfig):
     best_so_far = False
 
     prev_state = None  # Keep previous epoch state for debugging
-    grad_fraction_history = []  # Store gradient fractions per epoch for plotting
     for epoch in range(start_epoch, final_epoch_exclusive):
         # Save state before training (so we can replay if NaN happens)
         prev_state = {"net": net.state_dict(), "epoch": epoch, "optimizer": optimizer.state_dict()}
@@ -240,38 +241,6 @@ def main(cfg: DictConfig):
         # Add LSTM weight norm to wandb
         if lstm_weight_norm is not None:
             wandb_dict["diagnostics/lstm_weight_hh_norm"] = lstm_weight_norm
-        
-        # Add gradient sensitivity to wandb and create accumulating plot
-        if grad_sensitivity is not None:
-            total_mass = grad_sensitivity.sum().item()
-            if total_mass > 0:
-                fraction_mass = (grad_sensitivity / total_mass).cpu().tolist()
-                # Store for accumulating plot
-                grad_fraction_history.append(fraction_mass)
-                
-                # Create accumulating line plot with colors getting bluer over epochs
-                iterations = list(range(1, len(fraction_mass) + 1))
-                num_epochs = len(grad_fraction_history)
-                
-                # Create matplotlib plot with blue gradient
-                fig, ax = plt.subplots(figsize=(12, 7))
-                # Use colormap that goes from light to dark blue
-                colors = cm.Blues(np.linspace(0.3, 1.0, num_epochs))
-                
-                for i, (epoch_idx, frac_data) in enumerate(zip(range(start_epoch, epoch + 1), grad_fraction_history)):
-                    ax.plot(iterations, frac_data, color=colors[i], linewidth=1.5)
-                
-                ax.set_xlabel("iteration", fontsize=12)
-                ax.set_ylabel("gradient fraction", fontsize=12)
-                ax.set_title("Gradient Fraction per Iteration (Accumulating)", fontsize=14, pad=10)
-                ax.grid(True, alpha=0.3)
-                
-                # Adjust layout to prevent cropping
-                plt.subplots_adjust(left=0.1, right=0.75, top=0.9, bottom=0.1)
-                
-                # Log as wandb image
-                wandb_dict[f"grad/{cfg.run_id}_grad_fraction_plot"] = wandb.Image(fig)
-                plt.close(fig)
         
         #Diagnostics, only for transformer
         try:
@@ -432,18 +401,6 @@ def main(cfg: DictConfig):
                 "val/time": time.time() - start,
                 **first_iter_converge 
             }, step=epoch)
-            
-            #Logging plots
-            plot = wandb.plot.line_series(
-                xs=cfg.problem.model.test_iterations,
-                ys=[[test_acc[i] for i in cfg.problem.model.test_iterations]],
-                keys=["acc"],
-                title=f"Perf vs step (epoch {epoch})",
-                xname="recurrent_step")
-
-            wandb.log(
-                {f"plots/{cfg.run_id}": plot}, step = epoch
-            )
             
         # check to see if we should save
         save_now = (epoch + 1) % cfg.problem.hyp.save_period == 0 or \

@@ -9,6 +9,8 @@ import chess
 import torch
 from torch.utils import data
 
+from .repo_paths import repo_data_dir
+
 LICHESS_PUZZLE_URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
 LICHESS_PUZZLE_FILENAME = "lichess_db_puzzle.csv.zst"
 LICHESS_PUZZLE_CSV = "lichess_db_puzzle.csv"
@@ -189,7 +191,7 @@ def prepare_lichess_puzzle_loader(
     # Train on easier puzzles (<= X), test on harder puzzles (>= Y).
 
     trainset_full = LichessPuzzleDataset(
-        "../../../data",
+        repo_data_dir(),
         max_rating=train_data,
         max_samples=max_train_samples,
         **kwargs,
@@ -201,7 +203,7 @@ def prepare_lichess_puzzle_loader(
         generator=torch.Generator().manual_seed(42),
     )
     testset = LichessPuzzleDataset(
-        "../../../data",
+        repo_data_dir(),
         min_rating=train_data + 1,
         max_rating=test_data,
         max_samples=max_test_samples,

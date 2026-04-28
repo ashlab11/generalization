@@ -1,11 +1,4 @@
-""" arc_data.py
-    ARC-AGI-1 dataset loader with optional precomputed augmentations.
-
-    Mirrors the easy_to_hard_data dataset style:
-    - download once
-    - cache processed tensors
-    - __getitem__ returns (input, target)
-"""
+#Created this but was never able to run it effectively -- worth considering for a future project
 
 import errno
 import json
@@ -19,6 +12,8 @@ import hashlib
 
 import torch
 from torch.utils import data
+
+from .repo_paths import repo_data_dir
 
 ARC_AGI_TARBALL = "https://github.com/fchollet/ARC-AGI/archive/refs/heads/master.tar.gz"
 ARC_AGI_FOLDER = "ARC-AGI-master"
@@ -260,13 +255,13 @@ def prepare_arc_loader(
     **kwargs,
 ):
     trainset = ArcAgiDataset(
-        "../../../data",
+        repo_data_dir(),
         split="training",
         max_tasks=train_data,
         **kwargs,
     )
     testset = ArcAgiDataset(
-        "../../../data",
+        repo_data_dir(),
         split="evaluation",
         max_tasks=test_data,
         **kwargs,

@@ -343,7 +343,24 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
             )
             loss_all_outputs = loss_all_outputs.view(B, I, L).float()
             
-            zero_vec = torch.zeros_like(loss_all_outputs[:, :1, :])
+            # Hard anchor: min over iterations, per (B, L).
+            min_loss, argmin_idx = loss_all_outputs.min(dim=1, keepdim=True)   # [B, 1, L], [B, 1, L]
+
+            # Mask: 1 for indices strictly after the argmin, 0 elsewhere.
+            iter_idx = torch.arange(I, device=loss_all_outputs.device).view(1, I, 1)
+            post_mask = (iter_idx > argmin_idx).float()                 # [B, I, L]
+
+            # ReLU(L_n - sg(min)) for post-min steps only. Anchor detached.
+            min_detached = min_loss.detach()                            # [B, 1, L]
+            relu_vs_min = F.relu(loss_all_outputs - min_detached)       # [B, I, L]
+
+            # Tail: sum over post-min iterations.
+            tail_loss = (post_mask * relu_vs_min).sum(dim=1)            # [B, L]
+
+            # Total: min + tail.
+            total_loss = min_loss.squeeze(1) + tail_loss                # [B, L]
+            loss = total_loss.mean()
+            """zero_vec = torch.zeros_like(loss_all_outputs[:, :1, :])
 
             # Stable log-space computation with temperature beta.
             log_neg = -beta * loss_all_outputs
@@ -358,7 +375,7 @@ def train_softmin(net, loaders, train_setup, device, epoch=0):
             weights = torch.softmax(log_neg, dim=1).detach()
             relu_loss = (weights * relu_suffix).sum(dim = 1)
             
-            loss = ((1 - lam) * softmin_loss + lam * relu_loss).mean()
+            loss = ((1 - lam) * softmin_loss + lam * relu_loss).mean()"""
         
         # Use scaler if amp is enabled, otherwise regular backward
         if use_amp:
