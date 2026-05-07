@@ -5,8 +5,8 @@
 #SBATCH --mem=64G
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-# 4 recall × 4 residual × 3 prob × 3 LR × 7 seed = 1008 (LR fastest, seed slowest)
-#SBATCH --array=32,176,320,464
+# 4 recall × 4 residual × 3 prob × 3 LR × 3 seed = 432 (LR fastest, seed slowest)
+#SBATCH --array=0-431
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=b200
 
@@ -18,7 +18,7 @@ RESIDUAL_NAMES=("peri" "pre" "gru" "post")
 RESIDUAL_METHODS=("add" "add" "gru" "add")
 NORM_TYPES=("peri" "pre" "peri" "post")
 LRS=("0.0001" "0.0003" "0.001")
-SEEDS=(3 4 5 6 7 8 9)
+SEEDS=(0 1 2)
 RECALL_TYPES=("internal" "external" "none" "fixed")
 
 IDX=$SLURM_ARRAY_TASK_ID
@@ -89,7 +89,7 @@ python train_model.py \
     +run_id=$EXP_NAME \
     problem=$PROBLEM \
     problem/model=transformer \
-    problem.hyp.alpha=0.5 \
+    problem.hyp.alpha=1 \
     problem.hyp.epochs=100 \
     problem.hyp.optimizer=adamw \
     problem.hyp.weight_decay=0.01 \
@@ -117,4 +117,4 @@ python train_model.py \
     problem.model.ccot=none \
     hydra.run.dir=../scratch/outputs/$EXP_NAME \
     compile=true \
-    +sweep_name=alpha_stability_final \
+    +sweep_name=stability_final \

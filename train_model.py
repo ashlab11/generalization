@@ -1,12 +1,5 @@
-""" train_model.py
-    Train, test, and save models
-
-    Collaboratively developed
-    by Avi Schwarzschild, Eitan Borgnia,
-    Arpit Bansal, and Zeyad Emam.
-
-    Developed for DeepThinking project
-    October 2021
+"""
+Train model
 """
 
 import time

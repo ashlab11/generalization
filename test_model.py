@@ -1,14 +1,3 @@
-""" test_model.py
-    Test models
-
-    Collaboratively developed
-    by Avi Schwarzschild, Eitan Borgnia,
-    Arpit Bansal, and Zeyad Emam.
-
-    Developed for DeepThinking project
-    October 2021
-"""
-
 import logging
 import os
 import sys

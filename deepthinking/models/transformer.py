@@ -1,14 +1,3 @@
-""" dt_net_1d.py
-    DeepThinking 1D convolutional neural network.
-
-    Collaboratively developed
-    by Avi Schwarzschild, Eitan Borgnia,
-    Arpit Bansal, and Zeyad Emam.
-
-    Developed for DeepThinking project
-    October 2021
-"""
-
 import torch
 from torch import nn
 import torch.nn.functional as F

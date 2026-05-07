@@ -4,6 +4,7 @@ import torch.nn.functional as F
 """
 Exponential Moving Average Linear Layer. Shared-weight transformers are useful in that they can
 have earlier activations affect later activations -- sort of a long-distance skip-residual. 
+NOTE: I didn't use this in main project, just a cool idea
 """
 class EMA_Linear(nn.Module):
     def __init__(self, in_dim, out_dim, detach = False):

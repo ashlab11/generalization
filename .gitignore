@@ -32,10 +32,12 @@ output_default
 stuff_to_do.md
 *.out
 AGENTS.md
+for_later/
 *.tex
 *.csv
 archive/
 explanations.md
+experiments/loss_landscape_runs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

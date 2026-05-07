@@ -1,11 +1,9 @@
 """ testing.py
     Utilities for testing models
-
-    Collaboratively developed
-    by Avi Schwarzschild, Eitan Borgnia,
-    Arpit Bansal, and Zeyad Emam.
-
-    Developed for DeepThinking project
+    
+    Built off of work originally conducted by
+    Avi Schwarzschild, Eitan Borgnia,
+    Arpit Bansal, and Zeyad Emam for DeepThinking project
     October 2021
 """
 
