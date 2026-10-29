@@ -1,0 +1,71 @@
+problem:
+  hyp:
+    alpha: 1
+    clip: 1
+    epochs: 100
+    lr: 0.003
+    lr_decay: step
+    lr_factor: 0.1
+    lr_schedule:
+    - 60
+    - 100
+    lr_throttle: false
+    optimizer: adamw
+    weight_decay: 0.01
+    eps: 1.0e-08
+    save_period: -1
+    test_batch_size: 500
+    test_mode: default
+    train_batch_size: 500
+    train_mode: progressive
+    softmin_beta: 1.0
+    softmin_lambda: 0.1
+    val_period: 10
+    full_only_hard: false
+    warmup_period: 10
+    rand_method: basic
+    use_amp: true
+    seed: 0
+  model:
+    model: DTTransformer
+    model_path: null
+    hidden_dim: 256
+    num_blocks: 2
+    injection_type: linear
+    norm_type: pre
+    norm_before_head: true
+    recall_inner: false
+    attn_type: full
+    init_norm: false
+    num_sinks: 0
+    kernel_size: 5
+    local_attn_pad: false
+    hidden_dropout: 0
+    init_method: default
+    max_iters: 30
+    monotone_lambda: 0.0
+    monotone_margin: 0.0
+    noise_prob: 0.0
+    noise_scale: 0.01
+    velocity: 0
+    residual_method: add
+    ccot: none
+    num_ccot_tokens: 10
+    test_iterations:
+      low: 1
+      high: 500
+    in_channels: 10
+    out_channels: 10
+    spatial_dims: 2
+    qk_normalization: true
+  name: sudoku
+  train_data: expert
+  test_data: extreme
+  max_train_samples: 50000
+  max_test_samples: 10000
+train_log: train_log
+name: stability_rebuttal
+profile: false
+compile: true
+run_id: external_sudoku_pre_lr0.003_seed0_2blocks
+sweep_name: stability_rebuttal
