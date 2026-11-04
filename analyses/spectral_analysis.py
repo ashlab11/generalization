@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 #Creates a scatter plot:
 #x-axis is rho(W_x)
 #y-axis is **normalized** accuracy. 
-#focus entirely on pre-norm, across LR and across seeds
+#focus entirely on external recall without outer norm (pre and peri), across LR and across seeds
 #each problem gets its own shape + color combo
 
 ENTITY, PROJECT = "asherlabovich-brown-university", "deep-thinking"
@@ -16,7 +16,7 @@ runs = wandb.Api().runs(
         f"{ENTITY}/{PROJECT}",
         filters={"state": "finished", 
                  "config.sweep_name": "stability_final", 
-                 "config.problem.model.norm_type": "peri", 
+                 "config.problem.model.norm_type": {"$in": ["pre", "peri"]},
                  "config.problem.model.recall_inner": {"$in": ['False', 'false', False]}, 
                  "config.problem.model.injection_type": 'linear', 
                  "config.problem.model.residual_method": 'add'
@@ -55,7 +55,7 @@ for metric_key, name in zip(['val/hard_acc', 'train/val_acc'], ['hard', 'val']):
     ax.axvline(1, color='0.35', linestyle='--', linewidth=1, zorder=0)
     ax.set_xlabel(r'$\rho(W_x)$')
     ax.set_ylabel('Normalized accuracy')
-    ax.set_title(f"Spectral norm and {name} accuracy")
+    ax.set_title(f"Spectral radius and {name} accuracy")
     ax.legend(loc='upper right', fontsize=8, framealpha=0.9)
     fig.tight_layout()
     fig.savefig(f"{OUT_DIR}/spectral_{name}")

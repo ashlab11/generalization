@@ -1,5 +1,5 @@
 # We copy the naming of Bansal et al. 2022 here -- they call it "Schoop" since that's what the graph
-# looks like. We think it's cute!
+# looks like. We think it's cute! This isn't in the final paper, but is fun to see.
 
 #NOTE: wandb doesn't put out per-iter directly, so we grab it from the LOGS. DO NOT 
 #DELETE the slurm logs if you wish to run this one in particular!!

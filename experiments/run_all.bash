@@ -5,8 +5,8 @@
 #SBATCH --mem=64G
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-# 4 recall × 4 residual × 3 prob × 3 LR × 3 seed = 432 (LR fastest, seed slowest)
-#SBATCH --array=0-431
+# 4 recall × 4 residual × 3 prob × 3 LR × 10 seed = 1440 (LR fastest, seed slowest)
+#SBATCH --array=0-1439
 #SBATCH --partition=gpu-he
 #SBATCH --constraint=b200
 
@@ -18,7 +18,7 @@ RESIDUAL_NAMES=("peri" "pre" "gru" "post")
 RESIDUAL_METHODS=("add" "add" "gru" "add")
 NORM_TYPES=("peri" "pre" "peri" "post")
 LRS=("0.0001" "0.0003" "0.001")
-SEEDS=(0 1 2)
+SEEDS=(0 1 2 3 4 5 6 7 8 9)
 RECALL_TYPES=("internal" "external" "none" "fixed")
 
 IDX=$SLURM_ARRAY_TASK_ID
