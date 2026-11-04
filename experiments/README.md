@@ -2,7 +2,7 @@ These files run the norm/lr combination experiments, designed for a slurm cluste
 
 [run_all.bash](run_all.bash) runs all experiments except for high-lr sudoku, over 10 seeds (1440 runs). This will take substantial time (>4 days) on 1 GPU. [run_sudoku_high_lr.bash](run_sudoku_high_lr.bash) runs the remaining high-lr sudoku runs (160). All scripts were written for a B200 slurm cluster (`gpu-he` partition) with CUDA.
 
-[run_sudoku_jacobian.bash](run_sudoku_jacobian.bash) trains the 16 sudoku checkpoints (1 and 2 blocks) in `rebuttal_runs/`, and [measure_all.bash](measure_all.bash) runs [../analyses/measure_jacobian.py](../analyses/measure_jacobian.py) over them (Appendix B.3, Tables 4-5).
+[run_sudoku_jacobian.bash](run_sudoku_jacobian.bash) trains the 16 sudoku checkpoints (1 and 2 blocks) in `jacobian_runs/`, and [measure_all.bash](measure_all.bash) runs [../analyses/measure_jacobian.py](../analyses/measure_jacobian.py) over them (Appendix B.3, Tables 4-5).
 
 ## Where results live
 
