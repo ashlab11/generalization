@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print test_acc at iter 500 from every stats.json under rebuttal_runs."""
+"""Print test_acc at iter 500 from every stats.json under jacobian_runs."""
 
 import argparse
 import json
@@ -15,7 +15,7 @@ def acc_at(stats: dict, key: str, iter_: str) -> float | None:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--root", type=Path, default=Path("rebuttal_runs"))
+    p.add_argument("--root", type=Path, default=Path("jacobian_runs"))
     p.add_argument("--iter", default=ITER, help="test iteration (default: 500)")
     args = p.parse_args()
 

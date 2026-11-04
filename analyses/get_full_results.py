@@ -1,20 +1,21 @@
 import os
-from pandas.core.indexes.base import final
 import wandb
 import pandas as pd
 import numpy as np
 
-# Build val/hard LaTeX tables for the stability sweep.
+# Build val/hard LaTeX tables (mean ± SD over seeds) for the stability sweep.
 ENTITY, PROJECT = "asherlabovich-brown-university", "deep-thinking"
 OUT_DIR = "analyses/results"
 GET_RUNS = True
-WANDB_TIMEOUT = 180
+WANDB_TIMEOUT = 300
+FINAL_STEP = 99  # last epoch (epochs=100); val/* metrics are logged there
 WANDB_METRICS = {"val": "val/val_acc", "hard": "val/hard_acc"}
 METHOD_LABELS = {("gru", "peri"): "gru", ("add", "peri"): "peri", ("add", "post"): "post", ("add", "pre"): "pre"}
 PROBLEM_ORDER = ["chess", "sudoku", "prefix_sums"]
 RECALL_ORDER = ["internal", "external", "none", "fixed"]
 METHOD_ORDER = ["gru", "peri", "post", "pre"]
 PROBLEM_TEX = {"chess": "Chess", "sudoku": "Sudoku", "prefix_sums": r"Prefix\_sums"}
+DECIMALS = 1
 
 # Three LRs shown per problem in the main val/hard tables (edit per problem).
 PROBLEM_LRS = {
@@ -23,13 +24,17 @@ PROBLEM_LRS = {
     "prefix_sums": (0.0001, 0.0003, 0.001),
 }
 
-# Sudoku-only transparency table: all four training LRs.
+# Fixed-depth prefix-sums can't see the whole 512-bit input with local attention, so it is left out of hard data.
+EXCLUDED = {("hard", "prefix_sums", "fixed")}
+
+# Each table is a list of column groups: (header, metric, problem, lrs).
 SUDOKU_LRS_4 = (0.0001, 0.0003, 0.001, 0.003)
 TABLE_SPECS = [
-    ("table_val.tex", "val", PROBLEM_LRS, PROBLEM_ORDER),
-    ("table_hard.tex", "hard", PROBLEM_LRS, PROBLEM_ORDER),
-    ("table_sudoku_val_4lr.tex", "val", {"sudoku": SUDOKU_LRS_4}, ["sudoku"]),
-    ("table_sudoku_hard_4lr.tex", "hard", {"sudoku": SUDOKU_LRS_4}, ["sudoku"]),
+    ("table_val.tex", [(PROBLEM_TEX[p], "val", p, PROBLEM_LRS[p]) for p in PROBLEM_ORDER]),
+    ("table_hard.tex", [(PROBLEM_TEX[p], "hard", p, PROBLEM_LRS[p]) for p in PROBLEM_ORDER]),
+    # Sudoku transparency table: validation and hard accuracy across all four training LRs.
+    ("table_sudoku_4lr.tex", [("Validation Accuracy", "val", "sudoku", SUDOKU_LRS_4),
+                              ("Hard Accuracy", "hard", "sudoku", SUDOKU_LRS_4)]),
 ]
 
 
@@ -49,64 +54,90 @@ def recall_kind(m):
 
 
 def rows_from_wandb():
-    # Pull each finished run and keep the best metric value between steps 10 and 60.
+    # Final val/hard accuracy (at the last test iteration) of each finished run, read from the run summary.
     runs = wandb.Api(timeout=WANDB_TIMEOUT).runs(
         f"{ENTITY}/{PROJECT}",
         filters={"state": "finished", "config.sweep_name": "stability_final"},
+        per_page=500,
     )
     rows = []
     for run in runs:
         p, h, m = run.config["problem"], run.config["problem"]["hyp"], run.config["problem"]["model"]
-        hist = run.history(keys=["_step", *WANDB_METRICS.values()], pandas=True)
-        final_val = np.array(hist[WANDB_METRICS["val"]])[-1]
-        final_hard =  np.array(hist[WANDB_METRICS["hard"]])[-1]
-        
+        s = run.summary
+        assert s.get("_step") == FINAL_STEP, f"{run.name}: summary is from step {s.get('_step')}, not {FINAL_STEP}"
         rows.append({
             "problem": p["name"],
             "recall": recall_kind(m),
             "norm": METHOD_LABELS[(m["residual_method"], m["norm_type"])],
             "lr": float(h["lr"]),
             "seed": int(h["seed"]),
-            "val": final_val,
-            "hard": final_hard,
+            "created": run.created_at,
+            "val": s[WANDB_METRICS["val"]],
+            "hard": s[WANDB_METRICS["hard"]],
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # A config/seed that finished twice keeps its latest run.
+    return df.sort_values("created").drop_duplicates(["problem", "recall", "norm", "lr", "seed"], keep="last")
 
 
-def mean_snapped_to_lrs(df, problem_lrs, metric):
-    def snap(p, lr):
-        return min(problem_lrs[p], key=lambda t: abs(float(lr) - t))
+def cell_stats(df):
+    """(problem, recall, norm, lr, metric) -> (mean, sd) over seeds."""
+    g = df.assign(lr=df["lr"].round(6)).groupby(["problem", "recall", "norm", "lr"])
+    out = {}
+    for metric in WANDB_METRICS:
+        for (p, rec, nor, lr), r in g[metric].agg(["mean", "std"]).iterrows():
+            if (metric, p, rec) not in EXCLUDED:
+                out[(p, rec, nor, lr, metric)] = (r["mean"], r["std"])
+    return out
 
-    x = df.copy()
-    x["lr_k"] = [snap(p, l) for p, l in zip(x["problem"], x["lr"])]
-    return x.groupby(["problem", "recall", "norm", "lr_k"], as_index=False)[metric].mean()
+
+def rank_marks(values):
+    """Map each value to 'best' / 'second' by its rounded mean (ties share a mark)."""
+    distinct = sorted({round(v, DECIMALS) for v in values}, reverse=True)
+    marks = {}
+    if distinct:
+        marks[distinct[0]] = "best"
+    if len(distinct) > 1:
+        marks[distinct[1]] = "second"
+    return marks
 
 
-def full_table_tex(mean, metric, problem_lrs, problem_order):
-    kv = {
-        (r.problem, r.recall, r.norm, float(r.lr_k)): getattr(r, metric)
-        for r in mean.itertuples(index=False)
-    }
+def full_table_tex(stats, groups):
+    columns = [(gi, p, lr, metric) for gi, (_, metric, p, lrs) in enumerate(groups) for lr in lrs]
 
-    def cell(prob, rec, nor, lr):
-        v = kv.get((prob, rec, nor, float(lr)))
-        return r"\multicolumn{1}{c}{---}" if v is None or pd.isna(v) else f"{v:.2f}"
+    # Best and second-best mean in each column group (e.g. all of Chess), across every row and LR.
+    group_marks = [
+        rank_marks([stats[(p, rec, nor, lr, metric)][0] for lr in lrs for nor in METHOD_ORDER for rec in RECALL_ORDER
+                    if (p, rec, nor, lr, metric) in stats])
+        for _, metric, p, lrs in groups
+    ]
+
+    def cell(gi, prob, lr, metric, rec, nor):
+        v = stats.get((prob, rec, nor, lr, metric))
+        if v is None or pd.isna(v[0]):
+            return "---"
+        mean, sd = v
+        text = f"{mean:.{DECIMALS}f}{{\\scriptsize$\\pm${sd:.{DECIMALS}f}}}"
+        mark = group_marks[gi].get(round(mean, DECIMALS))
+        if mark == "best":
+            return rf"\textbf{{{text}}}"
+        if mark == "second":
+            return rf"\underline{{{text}}}"
+        return text
 
     col = 3
     cmid_parts = []
     heads1_parts = []
     heads2_parts = []
-    for p in problem_order:
-        lrs = problem_lrs[p]
+    for header, _, _, lrs in groups:
         n_lr = len(lrs)
         cmid_parts.append(rf"\cmidrule(lr){{{col}-{col + n_lr - 1}}}")
         col += n_lr
-        heads1_parts.append(rf"\multicolumn{{{n_lr}}}{{c}}{{{PROBLEM_TEX[p]}}}")
-        lr_cell = lambda e: rf"\multicolumn{{1}}{{c}}{{\footnotesize\num{{{lr_label(e)}}}}}"
+        heads1_parts.append(rf"\multicolumn{{{n_lr}}}{{c}}{{{header}}}")
+        lr_cell = lambda e: rf"{{\footnotesize\num{{{lr_label(e)}}}}}"
         heads2_parts.append(" & ".join(lr_cell(e) for e in lrs))
 
-    n_data = sum(len(problem_lrs[p]) for p in problem_order)
-    s_cols = "S[table-format=2.2]" * n_data
+    c_cols = "c" * len(columns)
 
     body = []
     norm_sep = r"\specialrule{0.2pt}{0.15em}{0.15em}"
@@ -114,15 +145,13 @@ def full_table_tex(mean, metric, problem_lrs, problem_order):
         if ni:
             body.append(norm_sep)
         for ri, rec in enumerate(RECALL_ORDER):
-            row_cells = " & ".join(
-                cell(p, rec, nor, lr) for p in problem_order for lr in problem_lrs[p]
-            )
+            row_cells = " & ".join(cell(*c, rec, nor) for c in columns)
             ncol = rf"\multirow{{{len(RECALL_ORDER)}}}{{*}}{{{nor}}}" if ri == 0 else ""
             body.append(f"{ncol} & {rec} & {row_cells} \\\\")
 
     return "\n".join(
         [
-            rf"\begin{{tabular}}{{@{{}}ll {s_cols}@{{}}}}",
+            rf"\begin{{tabular}}{{@{{}}ll {c_cols}@{{}}}}",
             r"\toprule",
             rf"\multirow{{2}}{{*}}{{Norm}} & \multirow{{2}}{{*}}{{Recall}} & {' & '.join(heads1_parts)} \\",
             "".join(cmid_parts),
@@ -135,12 +164,6 @@ def full_table_tex(mean, metric, problem_lrs, problem_order):
     )
 
 
-def write_table(df, out_name, metric, problem_lrs, problem_order):
-    mean = mean_snapped_to_lrs(df[df["problem"].isin(problem_order)], problem_lrs, metric)
-    with open(f"{OUT_DIR}/{out_name}", "w") as f:
-        f.write(full_table_tex(mean, metric, problem_lrs, problem_order) + "\n")
-
-
 if __name__ == "__main__":
     os.makedirs(OUT_DIR, exist_ok=True)
     runs_path = f"{OUT_DIR}/runs_val_hard.csv"
@@ -148,8 +171,11 @@ if __name__ == "__main__":
     if GET_RUNS:
         df.to_csv(runs_path, index=False)
 
-    mean = df.groupby(["problem", "recall", "norm", "lr"], as_index=False)[["val", "hard"]].mean()
-    mean.to_csv(f"{OUT_DIR}/mean_val_hard.csv", index=False)
+    summary = df.groupby(["problem", "recall", "norm", "lr"])[["val", "hard"]].agg(["mean", "std", "count"])
+    summary.to_csv(f"{OUT_DIR}/mean_sd_val_hard.csv")
+    print(f"{len(df)} runs; seeds per cell: {sorted(set(summary[('val', 'count')]))}")
 
-    for out_name, metric, problem_lrs, problem_order in TABLE_SPECS:
-        write_table(df, out_name, metric, problem_lrs, problem_order)
+    stats = cell_stats(df)
+    for out_name, groups in TABLE_SPECS:
+        with open(f"{OUT_DIR}/{out_name}", "w") as f:
+            f.write(full_table_tex(stats, groups) + "\n")

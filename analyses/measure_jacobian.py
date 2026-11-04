@@ -9,6 +9,8 @@ For each checkpoint, produces:
   3. Same rho with post_norm_func knocked out to Identity (post-norm runs
      only) -> isolates the outer-normalization factor
   4. rho(W_x), the paper's original proxy, for the comparison column
+  5. Mean pairwise token cosine similarity of the initial state x0 and the
+     settled state (Table 5: token clustering at init vs at the fixed point)
 
 Usage (same overrides as the training run, plus the checkpoint path):
 
@@ -34,6 +36,7 @@ import hydra
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from omegaconf import DictConfig
 
 import deepthinking as dt
@@ -68,7 +71,7 @@ def make_step_fn(model, x0):
     input x0 held fixed. Mirrors the training loop body with noise/velocity
     off (asserted) and an empty ccot buffer."""
     assert model.noise_prob == 0.0 and model.velocity == 0, \
-        "step fn assumes noise/velocity disabled (as in the rebuttal runs)"
+        "step fn assumes noise/velocity disabled (as in the Jacobian runs)"
     ccot = model.ccot_tokens.unsqueeze(0).repeat(x0.shape[0], 1, 1)
 
     def step(h):
@@ -108,6 +111,14 @@ def rho_Wx(model):
 # ---------------------------------------------------------------------------
 # Measurements
 # ---------------------------------------------------------------------------
+
+def token_cos_sim(h):
+    """Mean off-diagonal cosine similarity between token vectors of one
+    hidden state (1, *S, D) -> scalar; 1.0 means fully clustered tokens."""
+    t = F.normalize(h.reshape(-1, h.shape[-1]).float(), dim=-1)
+    n = t.shape[0]
+    return ((t @ t.T).sum().item() - n) / (n * (n - 1))
+
 
 def rollout(step, x_init, n_iters):
     deltas = []
@@ -202,6 +213,8 @@ def main(cfg: DictConfig):
             "final_rel_step": deltas[-1],
             "rho_full": rho_full,
             "rho_full_no_outer_norm": rho_nonorm,
+            "cos_sim_init": token_cos_sim(x0),
+            "cos_sim_fixed_point": token_cos_sim(x_star),
             "power_iter_last10_std": float(np.std(traj[-10:])),
             "deltas_every_25": deltas[::25],
         })
@@ -223,6 +236,8 @@ def main(cfg: DictConfig):
         # rho is only meaningful at an actual fixed point -> converged inputs
         "rho_full_mean_converged": mean_over("rho_full", conv),
         "rho_full_no_norm_mean_converged": mean_over("rho_full_no_outer_norm", conv),
+        "cos_sim_init_mean_converged": mean_over("cos_sim_init", conv),
+        "cos_sim_fixed_point_mean_converged": mean_over("cos_sim_fixed_point", conv),
         "per_input": results,
     }
     out_path = os.path.join(os.path.dirname(ckpt_path),
